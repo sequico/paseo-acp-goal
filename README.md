@@ -227,12 +227,14 @@ paseo plugin ls
 paseo plugin logs paseo-acp-goal
 ```
 
-`github:sequico/paseo-acp-goal` is the same source in shorthand, and `--ref` takes a
-branch, a tag, or a commit, for a setup that should sit on a known revision rather than
-on whatever `main` is today:
+`github:sequico/paseo-acp-goal` is the same source in shorthand. Every released
+version is a Git tag and a GitHub Release, and the section below for it is the
+release's notes — so a daemon can sit on a known revision instead of on whatever `main`
+is today, and move when you say so:
 
 ```bash
-paseo plugin install github:sequico/paseo-acp-goal --ref v0.1.1
+paseo plugin install github:sequico/paseo-acp-goal --ref v0.1.2
+paseo plugin update paseo-acp-goal --ref v0.1.3   # move it to a later release
 ```
 
 **From a local directory**, for working on the plugin itself:

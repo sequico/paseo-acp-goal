@@ -1,12 +1,33 @@
 # Changelog
 
-Notable changes, newest first. Versions are Git tags; the plugin is installed from
-Git rather than npm, so a tag is the unit of "a revision known to be good".
+Notable changes, newest first. A version is a Git tag and a GitHub Release, and the
+section below for it is that release's notes. The plugin is installed from Git rather
+than npm, so a released tag is both the unit of "a revision known to be good" and the
+unit a daemon pins itself to with `--ref`.
 
-Nothing below this line is in the tree except `0.1.1` and `0.1.0`. There is no
+Nothing below this line is in the tree except `0.1.2`, `0.1.1`, and `0.1.0`. There is no
 released `0.2.0`, and the section under that heading describes work that has **not**
 been written — it is here so that nobody reads this repository and concludes the
 unimplemented parts already shipped.
+
+## 0.1.2
+
+- **The goal field on the ACP goals screen is sized for a goal.** It was a single line,
+  as every other settings field is, which is right for a filename and wrong for a
+  sentence: what a human typed scrolled sideways instead of wrapping. It is now four
+  lines, held against the row's right edge like every other control in the card.
+- **A goal set on the screen is no longer reported as a launch label.** The transcript
+  card asked whether the goal came from the agent's own file and called everything else
+  a label, so a goal a human had typed on the screen was shown as one an orchestrator
+  had set. Each source has a word of its own, from one mapping over the vocabulary.
+- **Selecting another agent gives you that agent's goal, not your last edits.** The form
+  kept whatever had been typed across a selection change, because the fields were never
+  re-initialised, and "Set the goal" would have written the previous agent's text to the
+  newly selected one.
+- The plugin version is pinned between `package.json` and the constant the shipped
+  bundle reports, because the daemon gives server code no way to read the first one: a
+  release that bumped one and not the other would report the old version on every
+  handshake, silently. A bump that misses a file now fails the gate.
 
 ## 0.2.0 (planned — not implemented)
 

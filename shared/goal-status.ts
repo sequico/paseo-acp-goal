@@ -52,3 +52,19 @@ export const goalStatusSchema = z.object({
 export type GoalSource = z.output<typeof goalSourceSchema>;
 export type GoalState = z.output<typeof goalStateSchema>;
 export type GoalStatus = z.output<typeof goalStatusSchema>;
+
+/**
+ * How each source reads to a person, rather than how the enum spells it.
+ *
+ * A `Record` keyed by the vocabulary instead of a chain of comparisons, because the
+ * chain is exactly how this went wrong once: a two-branch test — `source === "file"
+ * ? "self-declared" : "label"` — treated everything that was not the agent's own file
+ * as a launch label, so a goal a human typed on the ACP goals screen was shown in a
+ * transcript as one an orchestrator had set. The `Record` makes a fourth source a
+ * compile error rather than a fourth silent falsehood.
+ */
+export const GOAL_SOURCE_LABEL: Record<GoalSource, string> = {
+  label: "label",
+  ui: "from the screen",
+  file: "self-declared",
+};

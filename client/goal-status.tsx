@@ -1,7 +1,7 @@
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { useMemo } from "react";
 import { Text, View } from "react-native";
-import type { GoalStatus } from "../shared/goal-status";
+import { GOAL_SOURCE_LABEL, type GoalStatus } from "../shared/goal-status";
 
 /**
  * The one row the plugin puts in a transcript.
@@ -82,7 +82,7 @@ export function GoalStatusCard({ item, theme, layout }: PluginTimelineItemProps<
       <View style={styles.header}>
         <Text style={styles.title}>{ROUND_LABEL}</Text>
         <Text style={styles.badge}>
-          {status.source === "file" ? "self-declared" : "label"} · {status.reason}
+          {GOAL_SOURCE_LABEL[status.source]} · {status.reason}
         </Text>
       </View>
       <Text style={styles.headline}>{headline(status)}</Text>

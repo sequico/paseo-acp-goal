@@ -7,6 +7,7 @@ import {
   SettingsSection,
   SettingsSwitch,
 } from "@getpaseo/plugin/client/ui";
+import { TextInput } from "@getpaseo/plugin/client/react-native";
 import { useCallback, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { goalClear, goalOverview, goalSet, type GoalRow } from "../shared/goal-admin";
@@ -28,6 +29,19 @@ type Theme = PluginSurfaceProps["theme"];
 
 /** The overview query's identity, declared once so it is stable across renders. */
 const OVERVIEW_KEY = ["paseo-acp-goal", "overview"] as const;
+
+/**
+ * How tall the goal field is, and the numbers that make it that tall.
+ *
+ * A goal is prose — "migrate the config loader to the new schema" — so the field is
+ * sized for a sentence rather than for a filename. `numberOfLines` is a hint on native
+ * rather than a measurement, so the height is also stated as lines times line height;
+ * the host's own multi-line fields carry `numberOfLines` and a `minHeight` for the same
+ * reason.
+ */
+const GOAL_FIELD_LINES = 4;
+const GOAL_FIELD_LINE_HEIGHT = 20;
+const GOAL_FIELD_PADDING_VERTICAL = 10;
 
 function stateColour(state: GoalState | null, theme: Theme): string {
   if (state === "completed") {
@@ -151,6 +165,7 @@ function GoalRowCard({ row, theme, compact, busy, selected, onSelect, onClear }:
 
 interface FormProps {
   row: GoalRow;
+  theme: Theme;
   busy: boolean;
   onCancel: () => void;
   onSubmit: (values: {
@@ -161,15 +176,55 @@ interface FormProps {
   }) => void;
 }
 
-function GoalForm({ row, busy, onCancel, onSubmit }: FormProps) {
+function GoalForm({ row, theme, busy, onCancel, onSubmit }: FormProps) {
   const [goal, setGoal] = useState(row.goal ?? "");
   const [verify, setVerify] = useState(row.verify ?? "");
   const [maxRounds, setMaxRounds] = useState(String(row.maxRounds));
   const [boundTokens, setBoundTokens] = useState(false);
   const [maxTokens, setMaxTokens] = useState("");
 
-  // `SettingsInput` owns its own text and reports every change, so plain state is
-  // enough here; no ref or draft plumbing is needed for a form this size.
+  // The goal gets a row of its own rather than `SettingsRow`, and the reason is
+  // layout rather than taste. `SettingsRow` wraps a control in a content-sized `View`,
+  // so a field inside it is only as wide as its own `minWidth` and cannot fill the row;
+  // and when a narrow window wraps that control onto a line of its own, the row's
+  // `justify-content: space-between` places a lone child at the start — the left edge,
+  // which is the opposite of what every other control in this card does. Here the label
+  // takes what it needs and the field takes the rest, so its right edge is against the
+  // card's right edge at every width: beside the label on a wide window, and still flush
+  // right on a narrow one, where the field shrinks instead of wrapping.
+  const styles = useMemo(
+    () => ({
+      goalRow: {
+        flexDirection: "row" as const,
+        alignItems: "flex-start" as const,
+        gap: 12,
+        paddingHorizontal: 16,
+        paddingVertical: 16,
+      },
+      goalLabel: { color: theme.colors.foreground, fontSize: 14 },
+      goalInput: {
+        flexGrow: 1,
+        flexShrink: 1,
+        flexBasis: 240,
+        minHeight: GOAL_FIELD_LINES * GOAL_FIELD_LINE_HEIGHT + 2 * GOAL_FIELD_PADDING_VERTICAL,
+        paddingHorizontal: 12,
+        paddingVertical: GOAL_FIELD_PADDING_VERTICAL,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 10,
+        backgroundColor: theme.colors.surface2,
+        color: theme.colors.foreground,
+        fontSize: 14,
+        lineHeight: GOAL_FIELD_LINE_HEIGHT,
+        textAlignVertical: "top" as const,
+      },
+    }),
+    [theme],
+  );
+
+  // Every field keeps its own text and reports each change — `SettingsInput` for the
+  // three scalar fields, `defaultValue` plus `onChangeText` for the goal — so plain
+  // state is enough here and no ref or draft plumbing is needed for a form this size.
   const submit = useCallback(() => {
     const rounds = Number(maxRounds);
     const tokens = Number(maxTokens);
@@ -188,12 +243,19 @@ function GoalForm({ row, busy, onCancel, onSubmit }: FormProps) {
   return (
     <SettingsSection title={`Goal for ${row.title ?? row.agentId}`}>
       <SettingsCard>
-        <SettingsInput
-          label="Goal"
-          placeholder="What should this agent finish?"
-          initialValue={row.goal ?? ""}
-          onChangeText={setGoal}
-        />
+        <View style={styles.goalRow}>
+          <Text style={styles.goalLabel}>Goal</Text>
+          <TextInput
+            multiline
+            numberOfLines={GOAL_FIELD_LINES}
+            defaultValue={row.goal ?? ""}
+            onChangeText={setGoal}
+            placeholder="What should this agent finish?"
+            placeholderTextColor={theme.colors.foregroundMuted}
+            accessibilityLabel="Goal"
+            style={styles.goalInput}
+          />
+        </View>
         <SettingsInput
           label="Verification command"
           hint="Exit 0 means done. Run in the agent's directory after every turn."
@@ -323,7 +385,17 @@ export function AcpGoalsSurface({ theme, layout }: PluginSurfaceProps) {
       )}
 
       {selectedRow === null ? null : (
-        <GoalForm row={selectedRow} busy={busy} onCancel={cancelForm} onSubmit={submitForm} />
+        <GoalForm
+          // Remounted per agent, so the fields start from that agent's goal. Without
+          // this the form keeps the text typed for the previously selected agent, and
+          // "Set the goal" would write it to the wrong one.
+          key={selectedRow.agentId}
+          row={selectedRow}
+          theme={theme}
+          busy={busy}
+          onCancel={cancelForm}
+          onSubmit={submitForm}
+        />
       )}
 
       {overview.data === undefined && overview.isPending ? null : (

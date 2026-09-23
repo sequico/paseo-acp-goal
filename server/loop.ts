@@ -37,7 +37,17 @@ import { LoopStore, newLoopRecord, paseoHome, type LoopRecord, type PersistedSta
 import { runVerify } from "./verify";
 
 export const PLUGIN_ID = "paseo-acp-goal";
-export const PLUGIN_VERSION = "0.1.1";
+/**
+ * The version this bundle reports when a goal tool handshakes.
+ *
+ * `package.json` carries the same fact, and it is the one a release is cut from. A
+ * comment cannot keep two copies equal and the daemon gives the bundle no way to read
+ * the other one — it is evaluated with `globalThis.eval`, with no `import.meta.url` and
+ * no path to its own directory, which is the same constraint that forces the goal tool
+ * onto loopback HTTP. So `tests/version.test.ts` pins the two together instead, and a
+ * bump that reaches one file and not the other fails the gate rather than shipping.
+ */
+export const PLUGIN_VERSION = "0.1.2";
 /** Carries the goal tool's token into the session so calls can be attributed. */
 export const GOAL_ENV_TOKEN = "PASEO_ACP_GOAL_TOKEN";
 
