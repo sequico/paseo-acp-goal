@@ -195,8 +195,8 @@ Plugins are trusted, unsandboxed code, and this one asks for two things worth
 knowing before installing it:
 
 - **A verification command runs with the daemon user's access**, in `/bin/sh -c` on
-  the agent's working directory. Configure a command you would run yourself. It
-  times out after fifteen minutes.
+  POSIX and `cmd.exe /c` on Windows, in the agent's working directory. Configure a
+  command you would run yourself. It times out after fifteen minutes.
 - **The goal tool listens on loopback**, on an ephemeral port, one unguessable path
   segment per session. It holds no credentials, exposes no goal text, and answers
   only `initialize`, `ping`, `tools/list`, and `tools/call`. A call arriving on a
@@ -209,6 +209,8 @@ It records the round count and token spend so a daemon restart cannot hand an ag
 fresh ceiling. It does **not** re-arm on restart: nothing re-sends by itself, because
 a loop that silently resumes spending after an unrelated crash is the kind of surprise
 this plugin exists to prevent.
+
+Reports and the reasoning behind the trust model are in [`SECURITY.md`](SECURITY.md).
 
 ## Install
 
@@ -233,8 +235,8 @@ release's notes — so a daemon can sit on a known revision instead of on whatev
 is today, and move when you say so:
 
 ```bash
-paseo plugin install github:sequico/paseo-acp-goal --ref v0.1.2
-paseo plugin update paseo-acp-goal --ref v0.1.3   # move it to a later release
+paseo plugin install github:sequico/paseo-acp-goal --ref v0.1.3
+paseo plugin update paseo-acp-goal --ref v0.1.4   # move it to a later release
 ```
 
 **From a local directory**, for working on the plugin itself:
@@ -261,7 +263,17 @@ npm run verify   # typecheck, lint, format:check, test
 
 `npm run verify` must come back at **0 errors and 0 warnings**, and the tests must
 pass — that is the gate, and reading the output matters more than the exit code. CI
-runs the same command on every push and pull request.
+runs the same command on every push and pull request, and `main` requires that job to
+pass, so the gate is enforced rather than trusted. The repository owner is exempt from
+that requirement, so a direct push is not blocked by a check that has not run yet.
+
+Every action the workflow uses is pinned to a commit SHA, and `dependabot.yml` raises
+those bumps weekly. A tag is mutable: whoever controls an action's repository could
+move `v4` onto different code and it would run here carrying this repository's token.
+
+Security-relevant expectations — what the plugin is trusted to do, what is worth
+reporting, and what belongs to Paseo or to a provider instead — are in
+[`SECURITY.md`](SECURITY.md).
 
 Two of the tests reproduce conditions that only the daemon produces, because Paseo
 does not run a plugin the way a developer does:

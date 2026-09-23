@@ -1,9 +1,15 @@
 name: verify
 
-# The gate this repository declares is 0 errors, 0 warnings, and a passing suite —
-# and until now nothing but a developer's shell enforced it. For a plugin whose value
-# is its guards, "it passed on my machine" is a much weaker claim than a green check
-# on the commit.
+# The gate this repository declares is 0 errors, 0 warnings, and a passing suite.
+# It runs here on every push and pull request, and `main` requires this job to pass
+# (with the repository owner exempt, so an owner's direct push is not blocked by a
+# check that has not run yet).
+#
+# Every action is pinned to a commit SHA rather than a tag. A tag is mutable: whoever
+# controls the action's repository can move `v4` onto different code, and that code
+# would run here with this repository's token. A SHA cannot be moved, so an upgrade is
+# a deliberate commit rather than something that happens to you. `dependabot.yml`
+# raises those bumps, which is what keeps a pinned workflow from going stale.
 
 on:
   push:
@@ -11,6 +17,7 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read-only for the whole workflow, so a compromised step cannot write to the repo.
 permissions:
   contents: read
 
@@ -18,9 +25,11 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout@v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - uses: actions/setup-node@v4
+      # actions/setup-node@v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           # The pinned Node LTS. `.nvmrc` is the human-facing copy of the same fact.
           node-version-file: .nvmrc

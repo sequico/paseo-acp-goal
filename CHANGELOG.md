@@ -5,10 +5,32 @@ section below for it is that release's notes. The plugin is installed from Git r
 than npm, so a released tag is both the unit of "a revision known to be good" and the
 unit a daemon pins itself to with `--ref`.
 
-Nothing below this line is in the tree except `0.1.2`, `0.1.1`, and `0.1.0`. There is no
-released `0.2.0`, and the section under that heading describes work that has **not**
-been written — it is here so that nobody reads this repository and concludes the
-unimplemented parts already shipped.
+Nothing below this line is in the tree except `0.1.3`, `0.1.2`, `0.1.1`, and `0.1.0`.
+There is no released `0.2.0`, and the section under that heading describes work that
+has **not** been written — it is here so that nobody reads this repository and
+concludes the unimplemented parts already shipped.
+
+## 0.1.3
+
+No plugin code changed in this release. What changed is the repository around it, and
+the release exists because a repository's guarantees should be as enforceable as the
+plugin it ships.
+
+- **`main` requires the `verify` job**, so the gate that `AGENTS.md` declares is a
+  mechanism rather than a habit. The repository owner is exempt, so an owner's direct
+  push is not blocked by a check that has not run yet.
+- **Force pushes and branch deletion are refused on `main`**, and released tags are
+  protected from being moved or deleted. This matters more here than in most
+  repositories: the plugin is installed as trusted, unsandboxed code, and a daemon
+  pinned with `--ref v0.1.2` trusts that ref to name the bundle it will run.
+- **Every action in the CI workflow is pinned to a commit SHA.** A tag is mutable, so
+  whoever controls an action's repository could move `v4` onto different code and it
+  would run here with this repository's token. `dependabot.yml` raises those bumps now,
+  which is what keeps a pinned workflow from rotting.
+- **Secret scanning and push protection are enabled**, so a credential written into a
+  commit is caught before it is published rather than after.
+- **`SECURITY.md`** says what the plugin is trusted to do, what is worth reporting, and
+  what is Paseo's or a provider's rather than this repository's.
 
 ## 0.1.2
 

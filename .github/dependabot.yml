@@ -1,0 +1,40 @@
+version: 2
+
+# Version updates, which is a different job from the security updates already enabled
+# on this repository. The security side only moves a package that has a published
+# advisory; this side moves the pins on a schedule, and it exists here for one
+# specific reason.
+#
+# `verify.yml` pins every action to a commit SHA so a moved tag cannot run new code
+# with this repository's token. A pin that nothing bumps is a pin that rots, so the
+# `github-actions` entry is what turns "pinned" into "pinned and current" without
+# anyone watching for releases by hand.
+#
+# `npm` is here because every dependency in this repository is a devDependency, and a
+# devDependency is what the daemon's `--omit=dev` install deliberately does not see —
+# so nothing else would ever tell us one had drifted.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"
+    labels:
+      - dependencies
+    groups:
+      # The toolchain moves together or the gate reports on two regimes at once, so a
+      # week's bumps arrive as one pull request whose CI run means something.
+      dev-toolchain:
+        patterns:
+          - "*"
