@@ -1,21 +1,23 @@
 import type { GoalSource } from "../shared/goal-status";
 
 /**
- * Where a goal comes from.
+ * Where a goal comes from, and what each channel may decide.
  *
  * An agent speaking ACP cannot be handed a system prompt — Paseo's ACP adapter
  * builds `session/new` from `cwd` and `mcpServers` only, and `systemPrompt` is
- * mapped by OMP alone. So there is no channel for telling an agent, in advance,
- * how to declare a goal. There are two channels instead:
+ * mapped by OMP alone. So there is no channel for telling an agent, in advance, how
+ * to declare a goal. There are three instead, in descending order of authority:
  *
- *  - a **label** set by whoever launches the agent, which is authoritative; and
+ *  - a **label** set by whoever launches the agent, which is authoritative;
+ *  - a **UI goal** set by a human on the ACP goal screen, an explicit act; and
  *  - a **file** in the workspace, which is the agent declaring a goal for itself.
  *
- * The file is the point of the plugin: an agent that cannot be told to write a
- * goal can still choose to write one. It is also the obvious attack surface, so
- * once a label goal exists the file may no longer redefine the goal, the
- * verification command, or the ceiling — it may only report. Without that rule an
- * agent could quietly narrow its own goal and then "finish".
+ * The file is the point of the plugin: an agent that cannot be told to write a goal
+ * can still choose to write one. It is also the obvious attack surface, so once a
+ * label goal exists the file may no longer redefine the goal, the verification
+ * command, or the ceiling — it may only report. Without that rule an agent could
+ * quietly narrow its own goal and then "finish". A UI goal outranks the file for the
+ * same reason: a human's explicit instruction is not the agent's to override.
  */
 
 export const GOAL_LABEL = "paseo-acp-goal";
@@ -157,19 +159,24 @@ export function parseGoalFile(raw: string): GoalFile | null {
 }
 
 /**
- * Resolve the goal for a turn.
+ * Resolve the goal for a turn, in one place, by the precedence stated above.
  *
- * A label wins on every launch parameter. The file only defines a goal when no
- * label did, which is what lets an unmanaged agent declare one for itself without
- * letting a managed agent redefine its own terms.
+ * A label wins on every launch parameter. A UI goal wins over the workspace file but
+ * not over the label. The file only defines a goal when neither of the other two did,
+ * which is what lets an unmanaged agent declare one for itself without letting a
+ * managed agent redefine its own terms.
  */
 export function resolveGoal(
   labels: Record<string, string> | null | undefined,
+  uiGoal: Goal | null,
   file: GoalFile | null,
 ): Goal | null {
   const fromLabel = goalFromLabels(labels);
   if (fromLabel !== null) {
     return fromLabel;
+  }
+  if (uiGoal !== null) {
+    return uiGoal;
   }
 
   const goal = trimmed(file?.goal);
@@ -184,6 +191,36 @@ export function resolveGoal(
     sentinel: DEFAULT_SENTINEL,
     maxTokens: file?.maxTokens ?? null,
     source: "file",
+  };
+}
+
+/** What the ACP goal screen may set. Absent fields fall back to the defaults. */
+export interface UiGoalInput {
+  goal: string;
+  verify?: string | undefined;
+  maxRounds?: number | undefined;
+  maxTokens?: number | undefined;
+}
+
+/**
+ * Turn a screen submission into a goal, or null when it carries no goal text.
+ *
+ * The sentinel is not settable from the screen: it exists so an agent can declare
+ * completion, and a human editing it would be editing the agent's vocabulary rather
+ * than their own instruction.
+ */
+export function goalFromUiInput(input: UiGoalInput): Goal | null {
+  const goal = trimmed(input.goal);
+  if (goal === null) {
+    return null;
+  }
+  return {
+    goal,
+    verify: trimmed(input.verify),
+    maxRounds: input.maxRounds === undefined ? DEFAULT_MAX_ROUNDS : clampRounds(input.maxRounds),
+    sentinel: DEFAULT_SENTINEL,
+    maxTokens: positiveOrNull(input.maxTokens),
+    source: "ui",
   };
 }
 

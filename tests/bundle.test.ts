@@ -92,7 +92,9 @@ describe("the server bundle", () => {
         return nodeRequire(name);
       }
       if (name.startsWith("@getpaseo/plugin")) {
-        return {};
+        // The host module the daemon injects. `defineRpc` is identity-shaped there, so
+        // the contract a plugin declares is the object it gets back.
+        return { defineRpc: (definition: unknown) => definition };
       }
       throw new Error(`the bundle required a module the host does not provide: ${name}`);
     };
@@ -103,17 +105,20 @@ describe("the server bundle", () => {
       throw new Error("the entry must default-export contribute");
     }
 
-    const registered: string[] = [];
+    const hooks: string[] = [];
+    const rpcs: string[] = [];
     const context = {
-      handle: () => {},
+      handle: (contract: { name: string }) => {
+        rpcs.push(contract.name);
+      },
       registerProvider: () => {},
       registerSettings: () => {},
       on: (name: string) => {
-        registered.push(name);
+        hooks.push(name);
         return () => {};
       },
       before: (name: string) => {
-        registered.push(name);
+        hooks.push(name);
         return () => {};
       },
     };
@@ -131,7 +136,7 @@ describe("the server bundle", () => {
       await Promise.resolve(result);
     } finally {
       assert.deepEqual(
-        [...registered].sort(),
+        [...hooks].sort(),
         [
           "agent.archived",
           "agent.create",
@@ -140,6 +145,11 @@ describe("the server bundle", () => {
           "agent.turn_started",
         ],
         "the plugin registers exactly the five hooks it declares, and no others",
+      );
+      assert.deepEqual(
+        [...rpcs].sort(),
+        ["goal.clear", "goal.overview", "goal.set"],
+        "and exactly the three RPCs the ACP goals screen calls",
       );
     }
   });

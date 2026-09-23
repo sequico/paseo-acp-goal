@@ -7,11 +7,14 @@ import {
   GOAL_FILE,
   GOAL_LABEL,
   fileDeclaresDone,
+  goalFromUiInput,
+  goalFromLabels,
   parseGoalFile,
   resolveGoal,
   sameGoal,
   type Goal,
   type GoalFile,
+  type UiGoalInput,
 } from "./goal-source";
 import {
   decide,
@@ -22,17 +25,19 @@ import {
   type ToolSignal,
 } from "./guard";
 import type { PaseoApi } from "./host-types";
+import { buildGoalRows } from "./goal-admin";
+import type { GoalRow } from "../shared/goal-admin";
 import { containsLine, endsWithQuestion, madeProgress, turnDigest, turnTail } from "./inspect";
 import { MCP_SERVER_NAME, mintToken, startGoalMcp, type GoalMcp, type ToolCallEvent } from "./mcp";
 import { buildNudge } from "./nudge";
-import { paseoGateway } from "./paseo-gateway";
+import { paseoGateway, listAdminAgents } from "./paseo-gateway";
 import type { ArchivedEvent, GoalLoopHost, HookContext, TurnEndedEvent } from "./plugin-host";
 import { configPathFor, readAcpProviders } from "./providers";
 import { LoopStore, newLoopRecord, paseoHome, type LoopRecord, type PersistedState } from "./store";
 import { runVerify } from "./verify";
 
 export const PLUGIN_ID = "paseo-acp-goal";
-export const PLUGIN_VERSION = "0.1.0";
+export const PLUGIN_VERSION = "0.1.1";
 /** Carries the goal tool's token into the session so calls can be attributed. */
 export const GOAL_ENV_TOKEN = "PASEO_ACP_GOAL_TOKEN";
 
@@ -91,6 +96,17 @@ interface Runtime {
   signals: Map<string, ToolCallEvent>;
   /** Tokens minted at creation, awaiting the session that will claim them. */
   pendingCreates: Map<string, PendingCreate>;
+  /** Goals a human set from the ACP goal screen. Outrank the workspace file. */
+  uiGoals: Map<string, Goal>;
+  /**
+   * The last disposition of a goal whose loop is no longer running.
+   *
+   * Kept separately from `loops` because those two collections answer different
+   * questions: `loops` is "what is spending right now", this is "what happened to the
+   * goal I set". Folding them together would make a finished goal look live, and live
+   * accounting outlive its loop.
+   */
+  completedLoops: Map<string, LoopRecord>;
   /** Agents whose turn has started and whose end has not been handled yet. */
   awaitingEnd: Set<string>;
   /** Agents we have seen a turn boundary for, which is what makes a duplicate visible. */
@@ -213,9 +229,16 @@ function toStatus(
 }
 
 async function persist(runtime: Runtime): Promise<void> {
-  const state: PersistedState = { version: 1, loops: {} };
+  const loops: Record<string, LoopRecord> = {};
   for (const [agentId, record] of runtime.loops) {
-    state.loops[agentId] = record;
+    loops[agentId] = record;
+  }
+  for (const [agentId, record] of runtime.completedLoops) {
+    loops[agentId] = record;
+  }
+  const state: PersistedState = { version: 1, loops, uiGoals: {} };
+  for (const [agentId, goal] of runtime.uiGoals) {
+    state.uiGoals[agentId] = goal;
   }
   await runtime.store.save(state).catch((error: unknown) => {
     console.error(`[${PLUGIN_ID}] Could not persist loop state:`, error);
@@ -226,12 +249,14 @@ async function persist(runtime: Runtime): Promise<void> {
  * The loop for this agent.
  *
  * A changed goal resets the round count and the stall detection, because a new goal
- * is new work. It does **not** reset the token spend: that ceiling bounds the agent,
- * and an agent able to zero its own spend by rewriting its goal file would have an
- * unbounded budget.
+ * is new work. It does **not** reset the token spend: that ceiling bounds the agent, so
+ * the spend follows the agent across goals — including across one that already
+ * finished, which is why the completed record is consulted as well. An agent able to
+ * start again with a fresh budget because a human set a second goal would have an
+ * unbounded allowance and the ceiling would be decorative.
  */
 function recordFor(runtime: Runtime, agentId: string, goal: Goal): LoopRecord {
-  const existing = runtime.loops.get(agentId);
+  const existing = runtime.loops.get(agentId) ?? runtime.completedLoops.get(agentId);
   if (existing !== undefined && sameGoal(existing.goal, goal)) {
     return existing;
   }
@@ -287,6 +312,15 @@ function prune(runtime: Runtime, timings: GoalLoopTimings): void {
     }
   }
 
+  // Outcomes are bounded by the same TTL. Without this, a finished goal would be
+  // remembered for the life of the daemon and the screen would fill with history it
+  // has no way to clear.
+  for (const [agentId, record] of runtime.completedLoops) {
+    if (Date.parse(record.updatedAt) <= loopCutoff) {
+      runtime.completedLoops.delete(agentId);
+    }
+  }
+
   const createCutoff = now - timings.pendingCreateTtlMs;
   for (const [token, mint] of runtime.pendingCreates) {
     if (mint.at <= createCutoff) {
@@ -318,6 +352,50 @@ function prune(runtime: Runtime, timings: GoalLoopTimings): void {
   }
 }
 
+/**
+ * Record a stop, tell the transcript, and decide what survives it.
+ *
+ * Extracted from the turn handler so the handler reads as evidence, decision, outcome
+ * — and because the survival rules are their own subject: a paused loop is kept so an
+ * answer continues it, a finished one is recorded as history, and the diagnostic runs
+ * before the binding it reads is forgotten.
+ */
+async function recordStop(
+  runtime: Runtime,
+  gateway: GoalAgentGateway,
+  agentId: string,
+  record: LoopRecord,
+  reason: StopReason,
+  detail: string,
+  verifyOutput: string | null,
+): Promise<void> {
+  const state: GoalStatus["state"] = COMPLETION_STOPS.has(reason) ? "completed" : "stopped";
+
+  const next: LoopRecord = { ...record, lastOutcome: { state, reason } };
+
+  if (RESUMABLE_STOPS.has(reason)) {
+    // A paused loop is kept, and so is a goal a human typed: answering a question must
+    // continue the same loop, with its round count and token spend intact.
+    runtime.loops.set(agentId, next);
+  } else {
+    // The diagnostic reads the goal-tool binding, so it runs before `forget` removes
+    // it. Ordering matters here and is the reason this is not a one-liner.
+    noteToolUnused(runtime, agentId, reason);
+    // The live record goes, so the round count and spend are not carried into unrelated
+    // work and the next goal starts its own budget.
+    forget(runtime, agentId);
+  }
+
+  // The outcome survives the loop for every goal, because "why did this stop" is worth
+  // answering for a labelled goal as much as for one a human typed. The TTL bounds it.
+  runtime.completedLoops.set(agentId, next);
+
+  runtime.log(
+    `[${PLUGIN_ID}] Agent ${agentId} ${state} (${reason}) after ${next.round} round(s): ${detail}`,
+  );
+  await gateway.writeStatus(agentId, toStatus(next, state, reason, detail, verifyOutput));
+}
+
 interface TurnContext {
   runtime: Runtime;
   gateway: GoalAgentGateway;
@@ -334,6 +412,11 @@ interface TurnContext {
  * is awaited here for the same reason it is awaited at creation — a turn that ends
  * before the ACP set has loaded must not be judged against an empty set and silently
  * dropped.
+ *
+ * The goal is resolved before the duplicate check, and the order is deliberate: without
+ * it, every watched agent that has no goal would log "ignoring a duplicate" for a loop
+ * it is not running. A diagnostic that fires for agents the plugin is not driving is
+ * worse than no diagnostic, because it teaches a reader to ignore the line.
  */
 async function handleTurnEnded({ runtime, gateway, event, ready }: TurnContext): Promise<void> {
   const { agent, outcome, timeline } = event;
@@ -343,14 +426,15 @@ async function handleTurnEnded({ runtime, gateway, event, ready }: TurnContext):
   if (snapshot === null || !isWatched(runtime, agent.provider, snapshot.labels)) {
     return;
   }
-  if (!takeTurnEnd(runtime, agent.id)) {
-    runtime.log(`[${PLUGIN_ID}] Ignoring a duplicate turn-ended event for agent ${agent.id}`);
+
+  const file = await readGoalFile(snapshot.cwd);
+  const goal = resolveGoal(snapshot.labels, runtime.uiGoals.get(agent.id) ?? null, file);
+  if (goal === null) {
     return;
   }
 
-  const file = await readGoalFile(snapshot.cwd);
-  const goal = resolveGoal(snapshot.labels, file);
-  if (goal === null) {
+  if (!takeTurnEnd(runtime, agent.id)) {
+    runtime.log(`[${PLUGIN_ID}] Ignoring a duplicate turn-ended event for agent ${agent.id}`);
     return;
   }
 
@@ -419,31 +503,16 @@ async function handleTurnEnded({ runtime, gateway, event, ready }: TurnContext):
 
   if (decision.action === "stop") {
     const detail = decision.detail ?? describeStop(decision.reason);
-    const state: GoalStatus["state"] = COMPLETION_STOPS.has(decision.reason)
-      ? "completed"
-      : "stopped";
-
-    if (RESUMABLE_STOPS.has(decision.reason)) {
-      runtime.loops.set(agent.id, next);
-    } else {
-      // The diagnostic reads the goal-tool binding, so it runs before `forget`
-      // removes it. Ordering matters here and is the reason this is not a one-liner.
-      noteToolUnused(runtime, agent.id, decision.reason);
-      forget(runtime, agent.id);
-    }
-
-    runtime.log(
-      `[${PLUGIN_ID}] Agent ${agent.id} ${state} (${decision.reason}) after ${next.round} round(s): ${detail}`,
-    );
-    await gateway.writeStatus(
-      agent.id,
-      toStatus(next, state, decision.reason, detail, verifyOutput),
-    );
+    await recordStop(runtime, gateway, agent.id, next, decision.reason, detail, verifyOutput);
     await persist(runtime);
     return;
   }
 
   next.round = decision.nextRound;
+  // The record may be carrying a previous stop — a loop paused on a question keeps
+  // its accounting so an answer continues it. Cleared here, because a running loop has
+  // no outcome and leaving the old one would describe it as stopped.
+  next.lastOutcome = null;
   runtime.loops.set(agent.id, next);
   await gateway.writeStatus(agent.id, toStatus(next, "running", "continue", null, verifyOutput));
 
@@ -528,6 +597,34 @@ export interface GoalLoop {
    * loop turns, which is how a suite becomes flaky on a machine it was never run on.
    */
   idle: () => Promise<void>;
+  /** The data behind the ACP goals screen. Read-only; the screen mutates via RPC. */
+  admin: GoalLoopAdmin;
+}
+
+/** What the ACP goals screen reads and writes, independent of any RPC transport. */
+export interface GoalLoopAdmin {
+  /**
+   * Every agent worth showing, with whatever goal it currently has.
+   *
+   * Takes the API rather than holding one, because a plugin's server code only ever
+   * receives a Paseo client inside a hook or handler context; there is no ambient
+   * client to capture at registration time.
+   */
+  rows(paseo: PaseoApi): Promise<GoalRow[]>;
+  /**
+   * Set a human-owned goal. Outranks the workspace file, never a launch label.
+   *
+   * Needs the client because it must read the agent's labels to know whether a label
+   * already owns the goal, and answering that from anything else would be a guess.
+   */
+  set(paseo: PaseoApi, agentId: string, input: UiGoalInput): Promise<{ ok: boolean }>;
+  /**
+   * Remove a human-owned goal. A launch label is not clearable from here.
+   *
+   * Needs no client: it only touches the plugin's own state, and a goal that is not in
+   * it was never the screen's to remove.
+   */
+  clear(agentId: string): Promise<{ ok: boolean }>;
 }
 
 export function registerGoalLoop(host: GoalLoopHost, options: GoalLoopOptions = {}): GoalLoop {
@@ -538,6 +635,8 @@ export function registerGoalLoop(host: GoalLoopHost, options: GoalLoopOptions = 
     agentToToken: new Map(),
     signals: new Map(),
     pendingCreates: new Map(),
+    uiGoals: new Map(),
+    completedLoops: new Map(),
     awaitingEnd: new Set(),
     everStarted: new Set(),
     toolUsed: new Set(),
@@ -563,7 +662,15 @@ export function registerGoalLoop(host: GoalLoopHost, options: GoalLoopOptions = 
   const ready: Promise<void> = (async () => {
     const persisted = await runtime.store.load();
     for (const [agentId, record] of Object.entries(persisted.loops)) {
-      runtime.loops.set(agentId, record);
+      // A record whose outcome is already decided is history, not live accounting.
+      if (record.lastOutcome === null) {
+        runtime.loops.set(agentId, record);
+      } else {
+        runtime.completedLoops.set(agentId, record);
+      }
+    }
+    for (const [agentId, goal] of Object.entries(persisted.uiGoals)) {
+      runtime.uiGoals.set(agentId, goal);
     }
     prune(runtime, timings);
     await refreshAcpProviders();
@@ -667,6 +774,67 @@ export function registerGoalLoop(host: GoalLoopHost, options: GoalLoopOptions = 
     }),
   );
 
+  const admin: GoalLoopAdmin = {
+    async rows(paseo): Promise<GoalRow[]> {
+      await ready;
+      return buildGoalRows({
+        agents: await listAdminAgents(paseo),
+        loops: runtime.loops,
+        completedLoops: runtime.completedLoops,
+        uiGoals: runtime.uiGoals,
+        isEligible: (provider, labels) => isWatched(runtime, provider, labels),
+      });
+    },
+
+    async set(paseo, agentId, input): Promise<{ ok: boolean }> {
+      await ready;
+      const goal = goalFromUiInput(input);
+      if (goal === null) {
+        return { ok: false };
+      }
+
+      // Refuse when a launch label owns the goal. The screen hides those rows' controls,
+      // but this RPC is reachable without the screen, and storing a goal the label will
+      // always outrank would be a silent no-op.
+      const owner = await buildGateway(paseo).snapshot(agentId);
+      if (owner !== null && goalFromLabels(owner.labels) !== null) {
+        runtime.log(
+          `[${PLUGIN_ID}] Refused a goal for agent ${agentId}: a launch label already owns it`,
+        );
+        return { ok: false };
+      }
+
+      // A human's instruction replaces whatever the agent declared for itself, and resets
+      // the round count so the new goal gets its own budget. The token spend is not reset:
+      // it bounds the agent, and `recordFor` reads it back from the record dropped here.
+      // Any recorded outcome goes with it — this goal has not run yet, and showing the
+      // previous goal's ending would describe work that has not happened.
+      runtime.uiGoals.set(agentId, goal);
+      runtime.completedLoops.delete(agentId);
+      await persist(runtime);
+      runtime.log(`[${PLUGIN_ID}] A goal was set from the ACP goals screen for agent ${agentId}`);
+      return { ok: true };
+    },
+
+    async clear(agentId): Promise<{ ok: boolean }> {
+      await ready;
+      if (!runtime.uiGoals.has(agentId)) {
+        return { ok: false };
+      }
+      runtime.uiGoals.delete(agentId);
+      runtime.completedLoops.delete(agentId);
+      // Clearing a goal means no longer driving that agent, so a loop in flight goes
+      // with it. Leaving the loop running would keep nudging toward a goal a human had
+      // just removed, which is the one thing this screen must never do.
+      forget(runtime, agentId);
+      await persist(runtime);
+      runtime.log(
+        `[${PLUGIN_ID}] A goal was cleared from the ACP goals screen for agent ${agentId}`,
+      );
+      return { ok: true };
+    },
+  };
+
   const settle = async (): Promise<void> => {
     // `allSettled` iterates its input synchronously, so the live set is safe to pass
     // directly; the loop re-reads its size in case more work was started meanwhile.
@@ -695,5 +863,5 @@ export function registerGoalLoop(host: GoalLoopHost, options: GoalLoopOptions = 
     await mcp?.close();
   };
 
-  return { cleanup, idle: settle };
+  return { cleanup, idle: settle, admin };
 }

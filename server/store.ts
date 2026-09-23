@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import type { GoalState } from "../shared/goal-status";
 import type { Goal } from "./goal-source";
 
 /**
@@ -27,6 +28,14 @@ export interface LoopRecord {
   lastTextDigest: string | null;
   /** Cumulative tokens spent by this loop, accumulated per turn. */
   tokensUsed: number;
+  /**
+   * The loop's last known disposition, so a screen can say why it is not running.
+   *
+   * Recorded here rather than read back from the status row because the row lives in
+   * the agent's transcript: answering "why did this stop" from the transcript would
+   * mean paging through it, and this is one field.
+   */
+  lastOutcome: { state: GoalState; reason: string } | null;
   startedAt: string;
   updatedAt: string;
 }
@@ -34,6 +43,15 @@ export interface LoopRecord {
 export interface PersistedState {
   version: 1;
   loops: Record<string, LoopRecord>;
+  /**
+   * Goals a human set from the ACP goal screen.
+   *
+   * Persisted for the same reason the accounting is, and more strongly: a goal typed
+   * by a person is an instruction, not a cache, so a daemon restart must not quietly
+   * drop it. Absent in state files written before the screen existed, which is why it
+   * is filled in on load rather than required.
+   */
+  uiGoals: Record<string, Goal>;
 }
 
 export function paseoHome(): string {
@@ -63,11 +81,16 @@ export class LoopStore {
       return emptyState();
     }
     try {
-      const parsed = JSON.parse(raw) as PersistedState;
+      const parsed = JSON.parse(raw) as Partial<PersistedState>;
       if (parsed.version !== 1 || parsed.loops === null || typeof parsed.loops !== "object") {
         return emptyState();
       }
-      return parsed;
+      return {
+        version: 1,
+        loops: parsed.loops,
+        uiGoals:
+          parsed.uiGoals !== null && typeof parsed.uiGoals === "object" ? parsed.uiGoals : {},
+      };
     } catch {
       // A corrupt state file must not stop the plugin from loading. The loops it
       // described are forgotten, which is the safe direction to fail.
@@ -85,7 +108,7 @@ export class LoopStore {
 }
 
 function emptyState(): PersistedState {
-  return { version: 1, loops: {} };
+  return { version: 1, loops: {}, uiGoals: {} };
 }
 
 export function newLoopRecord(input: {
@@ -101,6 +124,7 @@ export function newLoopRecord(input: {
     noProgressStreak: 0,
     lastTextDigest: null,
     tokensUsed: input.tokensUsed,
+    lastOutcome: null,
     startedAt: now,
     updatedAt: now,
   };

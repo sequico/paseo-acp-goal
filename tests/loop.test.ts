@@ -7,6 +7,9 @@ import { describe, it } from "node:test";
 import type { GoalStatus } from "../shared/goal-status";
 import type { GoalAgentGateway, GoalAgentSnapshot } from "../server/gateway";
 import { GOAL_ENV_TOKEN, registerGoalLoop } from "../server/loop";
+import type { AdminAgent } from "../server/goal-admin";
+import type { GoalRow } from "../shared/goal-admin";
+import type { UiGoalInput } from "../server/goal-source";
 import type { PaseoApi } from "../server/host-types";
 import type {
   ArchivedEvent,
@@ -57,6 +60,12 @@ interface HarnessOptions {
   archived?: boolean;
   goalFile?: Record<string, unknown>;
   recordTtlMs?: number;
+  /**
+   * Where loop accounting lives. Defaults to a directory inside the harness's own
+   * temp dir, which is removed with it; pass a shared path to model a restart across
+   * two registrations.
+   */
+  stateDirectory?: string;
 }
 
 interface Harness {
@@ -79,6 +88,13 @@ interface Harness {
   writeGoalFile: (contents: Record<string, unknown>) => Promise<void>;
   /** The last status written for an agent, or undefined. */
   lastStatus: (agentId?: string) => GoalStatus | undefined;
+  /** The ACP goals screen's surface, driven directly rather than over RPC. */
+  admin: {
+    rows: () => Promise<GoalRow[]>;
+    set: (agentId: string, input: UiGoalInput) => Promise<{ ok: boolean }>;
+    clear: (agentId: string) => Promise<{ ok: boolean }>;
+  } /** What the screen's roster call would return, for a given agent list. */;
+  setRoster: (agents: AdminAgent[]) => void;
   dispose: () => Promise<void>;
 }
 
@@ -175,13 +191,34 @@ async function startHarness(options: HarnessOptions = {}): Promise<Harness> {
   const loop = registerGoalLoop(host, {
     version: "0.0.0-test",
     configPath,
-    stateDirectory: path.join(dir, "state"),
+    stateDirectory: options.stateDirectory ?? path.join(dir, "state"),
     gateway: () => gateway,
     // An injected sink rather than a replaced global: two harnesses cannot clobber
     // each other's output, and a failure cannot leave `console` patched behind it.
     log: (message) => recorded.logs.push(message),
     ...(options.recordTtlMs === undefined ? {} : { timings: { recordTtlMs: options.recordTtlMs } }),
   });
+
+  // The screen's roster call goes through the gateway adapter, which is SDK knowledge.
+  // This stands in for `agents.list()` and mirrors the payload it returns — `id`, not
+  // `agentId` — so the adapter's own mapping is exercised rather than bypassed.
+  let roster: AdminAgent[] = [];
+  const adminPaseo = {
+    agents: {
+      list: async () => ({
+        entries: roster.map((agent) => ({
+          agent: {
+            id: agent.agentId,
+            title: agent.title,
+            provider: agent.provider,
+            status: agent.status,
+            labels: agent.labels,
+            archivedAt: agent.archived ? "2026-01-01T00:00:00.000Z" : null,
+          },
+        })),
+      }),
+    },
+  } as unknown as PaseoApi;
 
   // Every hook detaches its work, because a verification command may run for minutes.
   // Waiting on a fixed number of event loop turns would make this suite depend on how
@@ -247,6 +284,16 @@ async function startHarness(options: HarnessOptions = {}): Promise<Harness> {
     async dispose() {
       await loop.cleanup();
       await rm(dir, { recursive: true, force: true });
+    },
+    setRoster(agents) {
+      roster = agents;
+    },
+    admin: {
+      // The screen always reaches the daemon through a handler context, which carries
+      // the client; here the harness supplies the one the roster needs.
+      rows: () => loop.admin.rows(adminPaseo),
+      set: (agentId, input) => loop.admin.set(adminPaseo, agentId, input),
+      clear: (agentId) => loop.admin.clear(agentId),
     },
   };
 }
@@ -774,6 +821,214 @@ describe("the goal-tool diagnostic", () => {
         "an agent that was never offered the tool has nothing to warn about",
       );
     });
+  });
+});
+
+describe("the ACP goals screen, end to end", () => {
+  function screenAgent(overrides: Partial<AdminAgent> & { agentId: string }): AdminAgent {
+    return {
+      title: `Agent ${overrides.agentId}`,
+      provider: "codewhale",
+      status: "idle",
+      labels: {},
+      archived: false,
+      ...overrides,
+    };
+  }
+
+  it("sets a goal from the screen and drives the agent with it", async () => {
+    // The point of the screen: a goal that exists because a human typed it, with no
+    // label and no workspace file anywhere.
+    await withHarness({}, async (harness) => {
+      harness.setRoster([screenAgent({ agentId: AGENT.id })]);
+
+      const before = await harness.admin.rows();
+      assert.equal(before.length, 1);
+      assert.equal(before[0]?.goal, null, "an eligible agent shows up with no goal yet");
+
+      const saved = await harness.admin.set(AGENT.id, {
+        goal: "Ship the migration from the screen",
+        verify: "exit 0",
+        maxRounds: 3,
+      });
+      assert.deepEqual(saved, { ok: true });
+
+      const after = await harness.admin.rows();
+      assert.equal(after[0]?.goal, "Ship the migration from the screen");
+      assert.equal(after[0]?.source, "ui");
+      assert.equal(after[0]?.verify, "exit 0");
+      assert.equal(after[0]?.editable, true);
+
+      // And the loop acts on it: a passing verification ends the first turn.
+      await harness.turn(assistantTurn("done"));
+      const last = harness.lastStatus();
+      assert.equal(last?.goal, "Ship the migration from the screen");
+      assert.equal(last?.source, "ui");
+      assert.equal(last?.reason, "verify-passed");
+    });
+  });
+
+  it("refuses a goal with no text rather than installing an empty one", async () => {
+    await withHarness({}, async (harness) => {
+      assert.deepEqual(await harness.admin.set(AGENT.id, { goal: "   " }), { ok: false });
+      harness.setRoster([screenAgent({ agentId: AGENT.id })]);
+      assert.equal((await harness.admin.rows())[0]?.goal, null);
+    });
+  });
+
+  it("clears a goal a human set, and reports what it last did", async () => {
+    await withHarness({}, async (harness) => {
+      harness.setRoster([screenAgent({ agentId: AGENT.id })]);
+      await harness.admin.set(AGENT.id, { goal: "temporary work", verify: "exit 1" });
+      await harness.turn(assistantTurn("attempt"));
+
+      const running = (await harness.admin.rows())[0];
+      assert.equal(running?.state, "running", "the loop continues while the command fails");
+
+      assert.deepEqual(await harness.admin.clear(AGENT.id), { ok: true });
+      const after = (await harness.admin.rows())[0];
+      assert.equal(after?.goal, null, "the instruction is gone");
+      assert.equal(after?.state, null);
+    });
+  });
+
+  it("refuses to clear a goal it does not own", async () => {
+    await withHarness({}, async (harness) => {
+      // A launch label is not the screen's to remove, and the screen must not pretend
+      // otherwise.
+      assert.deepEqual(await harness.admin.clear("someone-else"), { ok: false });
+    });
+  });
+
+  it("shows a launch label as read-only and keeps it after a stop", async () => {
+    await withHarness(
+      { labels: { "paseo-acp-goal": "from the orchestrator", "paseo-acp-goal-max": "1" } },
+      async (harness) => {
+        harness.setRoster([
+          screenAgent({ agentId: AGENT.id, labels: { "paseo-acp-goal": "from the orchestrator" } }),
+        ]);
+
+        await harness.turn(assistantTurn("one"));
+        await harness.turn(assistantTurn("two"));
+        assert.equal(harness.lastStatus()?.reason, "max-rounds");
+
+        const row = (await harness.admin.rows())[0];
+        assert.equal(row?.source, "label");
+        assert.equal(row?.editable, false, "a label is read-only on this screen");
+        assert.equal(row?.state, "stopped");
+        assert.equal(row?.reason, "max-rounds", "the screen says why it stopped");
+      },
+    );
+  });
+
+  it("reports a resumed loop as running again, not as the stop it already recovered from", async () => {
+    // A paused loop keeps its record so an answer continues it. That record also holds
+    // the outcome that paused it, so the first turn after the answer has to clear it —
+    // otherwise the screen tells a human that a live loop is stopped.
+    await withHarness(
+      { labels: { "paseo-acp-goal": "x", "paseo-acp-goal-max": "5" } },
+      async (harness) => {
+        harness.setRoster([screenAgent({ agentId: AGENT.id })]);
+
+        await harness.turn(assistantTurn("Should I delete the branch?"));
+        const paused = (await harness.admin.rows())[0];
+        assert.equal(paused?.state, "stopped");
+        assert.equal(paused?.reason, "question");
+
+        await harness.turn(assistantTurn("answered, carrying on"));
+        const resumed = (await harness.admin.rows())[0];
+        assert.equal(resumed?.state, "running", "the loop is running again");
+        assert.equal(resumed?.reason, null, "and the old stop no longer describes it");
+      },
+    );
+  });
+
+  it("refuses to set a goal on an agent a launch label already owns", async () => {
+    // The screen hides those rows' controls, but the RPC is reachable without the
+    // screen. Storing a goal that the label will always outrank would be a silent
+    // no-op, and silence is the one thing this plugin tries not to do.
+    await withHarness(
+      { labels: { "paseo-acp-goal": "from the orchestrator" } },
+      async (harness) => {
+        assert.deepEqual(await harness.admin.set(AGENT.id, { goal: "mine instead" }), {
+          ok: false,
+        });
+      },
+    );
+  });
+
+  it("does not show a previous goal's ending against a goal that has not run yet", async () => {
+    // A file-declared goal runs to its ceiling and ends, leaving a recorded outcome. Then
+    // a human sets a new goal, which must not inherit that ending: this goal has not run
+    // yet. A label goal cannot be replaced, so the file is the channel that reaches here.
+    await withHarness({ goalFile: { goal: "first", maxRounds: 1 } }, async (harness) => {
+      harness.setRoster([screenAgent({ agentId: AGENT.id })]);
+
+      await harness.turn(assistantTurn("one"));
+      await harness.turn(assistantTurn("two"));
+      const ended = (await harness.admin.rows())[0];
+      assert.equal(ended?.state, "stopped");
+      assert.equal(ended?.reason, "max-rounds");
+
+      assert.deepEqual(await harness.admin.set(AGENT.id, { goal: "the human's goal" }), {
+        ok: true,
+      });
+
+      const fresh = (await harness.admin.rows())[0];
+      assert.equal(fresh?.goal, "the human's goal");
+      assert.equal(fresh?.state, "running", "a goal that has not run reads as running");
+      assert.equal(fresh?.reason, null, "and carries no previous outcome");
+    });
+  });
+
+  it("keeps the token spend across a finished goal, because the ceiling bounds the agent", async () => {
+    // The escape this closes: finish goal A having spent most of the allowance, have a
+    // human set goal B, and get a fresh budget for the same money.
+    await withHarness(
+      {
+        inputTokens: 400,
+        outputTokens: 200,
+        labels: { "paseo-acp-goal": "first", "paseo-acp-goal-max-tokens": "1000" },
+      },
+      async (harness) => {
+        await harness.turn(assistantTurn("done\nGOAL_COMPLETE"));
+        assert.equal(harness.lastStatus()?.reason, "sentinel", "600 of 1000 spent");
+
+        // A new goal, set the way the screen sets one.
+        await harness.admin.set(AGENT.id, { goal: "second", maxTokens: 1000 });
+        await harness.turn(assistantTurn("different work"));
+
+        assert.equal(
+          harness.lastStatus()?.reason,
+          "token-budget",
+          "the spend carried: 1200 against the same 1000 ceiling",
+        );
+      },
+    );
+  });
+
+  it("survives a restart, because a human's instruction is not a cache", async () => {
+    // A goal typed on the screen is an instruction. A daemon restart must not drop it
+    // the way it drops transient accounting.
+    const shared = await mkdtemp(path.join(tmpdir(), "acp-goal-state-"));
+    try {
+      const first = await startHarness({ stateDirectory: shared });
+      await first.admin.set(AGENT.id, { goal: "must survive" });
+      await first.dispose();
+
+      // A second registration over the same state directory stands in for a restart.
+      const again = await startHarness({ stateDirectory: shared });
+      try {
+        again.setRoster([screenAgent({ agentId: AGENT.id })]);
+        const row = (await again.admin.rows())[0];
+        assert.equal(row?.goal, "must survive");
+        assert.equal(row?.source, "ui");
+      } finally {
+        await again.dispose();
+      }
+    } finally {
+      await rm(shared, { recursive: true, force: true });
+    }
   });
 });
 

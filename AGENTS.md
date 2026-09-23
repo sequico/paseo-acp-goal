@@ -25,10 +25,20 @@ change, there is exactly one place to change it.
 No copy-pasted logic, no near-identical branches, no second implementation of a
 decision that already exists. Extract on the second use, not the third.
 
+The sharpest instance in this repository is goal precedence. A goal can come from a
+launch label, the ACP goals screen, or a file the agent wrote, and _which one wins_ is
+answered by `resolveGoal` in `server/goal-source.ts` — once. The loop calls it, and so
+does the screen's row builder, which is why the screen cannot disagree with the loop
+about whose goal is in force.
+
 State is never mirrored. If the daemon already knows something — whether an agent
 is archived, whether a request is pending, what the working directory is — read it
 from the snapshot. Do not keep a local copy updated by events; that is a second
 source of truth with a synchronisation bug built in.
+
+The same rule applies across the plugin boundary: the screen in the app decides nothing.
+Eligibility, precedence, and whether a row may be cleared are answered by the daemon,
+because a second copy of those rules in the view layer would be a second truth.
 
 ### 3. No workarounds
 
@@ -103,3 +113,13 @@ word "commit" or "push".
 Fail fast. Every command carries an explicit timeout, anything expected to
 outlast a few seconds is backgrounded and polled, and no search walks a
 FUSE-synced mount.
+
+## What is verified, and what is merely written
+
+The README's Limits section is part of the deliverable, not a disclaimer bolted on.
+When something is tested but not exercised against a real daemon, or written but never
+seen rendered, it says so there — in the same sentence as the feature, not in a
+footnote. Two standing examples: the goal tool is inert on providers that do not expose
+injected MCP servers, and no part of the app UI has been watched rendering. A claim in
+this repository without a test, a run, or an explicit "unverified" marker is a bug in
+the documentation.

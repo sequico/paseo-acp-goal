@@ -9,8 +9,19 @@ import { z } from "zod";
  * derives it from here rather than declaring its own.
  */
 
-/** Where a goal came from. The only two channels there are. */
-export const goalSourceSchema = z.enum(["label", "file"]);
+/**
+ * Where a goal came from, in descending order of authority.
+ *
+ * - `label` — set at launch by whoever orchestrates the agent. Nothing may override it.
+ * - `ui` — set by a human from the ACP goal screen. An explicit human act, so it
+ *   outranks the agent's own file.
+ * - `file` — declared by the agent itself in its workspace.
+ *
+ * Adding `ui` was an additive change to a versioned row, not a new version: every
+ * value the previous set could produce is still valid, so rows already in
+ * transcripts keep rendering.
+ */
+export const goalSourceSchema = z.enum(["label", "ui", "file"]);
 
 /** How a loop ended, as far as the transcript is concerned. */
 export const goalStateSchema = z.enum(["running", "completed", "stopped"]);

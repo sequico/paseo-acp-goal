@@ -5,6 +5,7 @@ import {
   type GoalStatus,
 } from "../shared/goal-status";
 import type { GoalAgentGateway, GoalAgentSnapshot } from "./gateway";
+import type { AdminAgent } from "./goal-admin";
 import type { PaseoApi } from "./host-types";
 
 /**
@@ -48,4 +49,25 @@ export function paseoGateway(paseo: PaseoApi): GoalAgentGateway {
       });
     },
   };
+}
+
+/**
+ * The agent roster, one page, for the ACP goals screen.
+ *
+ * This lives in the adapter because it is SDK knowledge, like everything else here.
+ * The list payload already carries the labels, so eligibility is answerable without
+ * the per-agent refresh the turn path needs.
+ */
+export async function listAdminAgents(paseo: PaseoApi): Promise<AdminAgent[]> {
+  // Default scope excludes archived agents, which is what the screen wants: an
+  // archived agent has no loop left to show.
+  const { entries } = await paseo.agents.list();
+  return entries.map(({ agent }) => ({
+    agentId: agent.id,
+    title: agent.title,
+    provider: agent.provider,
+    status: agent.status,
+    labels: agent.labels,
+    archived: agent.archivedAt !== undefined && agent.archivedAt !== null,
+  }));
 }

@@ -34,7 +34,7 @@ ignored — `turnId` cannot be the key, since Paseo documents that it "can repea
 a session reopens" — and the detection fails open, because dropping a real turn
 silently is worse than one redundant nudge.
 
-## Two ways to declare a goal
+## Three ways to declare a goal
 
 **A label**, set by whoever launches the agent. Authoritative:
 
@@ -45,6 +45,14 @@ paseo run --provider codewhale \
   --label 'paseo-acp-goal-max=6' \
   "Start by reading the test file."
 ```
+
+**The ACP goals screen**, in Paseo's sidebar under History, Search, and Schedules.
+Pick an agent, type a goal, and the loop starts on its next turn. It outranks a goal
+the agent declared for itself and yields to a launch label:
+
+- a human's explicit instruction is not the agent's to override; and
+- a label belongs to whoever launched the agent, so those rows are shown read-only
+  rather than offered a Clear button that would fail.
 
 **A file** the agent writes in its own workspace — `.acp-goal.json`:
 
@@ -57,9 +65,32 @@ paseo run --provider codewhale \
 ```
 
 The file is the point of the plugin as much as the loop is: an agent that cannot be
-told to declare a goal can still choose to. Once a label goal exists, the file may
-no longer redefine the goal, the verification command, or the ceiling — it may only
-report. Without that fence an agent could narrow its own goal and then "finish".
+told to declare a goal can still choose to. Once a label goal exists, the file may no
+longer redefine the goal, the verification command, or the ceiling — it may only
+report, and may declare the goal met (`done: true`). Without that fence an agent could
+narrow its own goal and then "finish".
+
+## The ACP goals screen
+
+A sidebar item, next to Paseo's own History, Search, and Schedules. It answers the two
+questions a command-line-only plugin cannot: _which_ agents are being driven, and
+_what can I do about it right now_.
+
+Each row is one agent that is eligible for a goal or already carrying one:
+
+- the agent's title, provider, and status;
+- its goal, where that goal came from (`label`, `ui`, or `file`), and how far the loop
+  has got — round 3 of 8, met, or stopped with the reason;
+- the verification command, when there is one.
+
+From there you can set a goal, replace one, or clear it, with round and token ceilings
+as optional fields. Clearing stops the loop: a goal a human removed must not keep being
+nudged toward.
+
+Everything the screen shows comes from one RPC (`goal.overview`) and everything it does
+is two more (`goal.set`, `goal.clear`). It decides nothing itself — eligibility,
+precedence, and whether a row may be cleared are the loop's rules, answered by the
+daemon, because a second copy of those rules in the app would be a second truth.
 
 ## Completion: the sentinel decides, the tool is an upgrade
 
@@ -94,7 +125,7 @@ So the two are not equals, and the README says which one is load-bearing:
 When the plugin offers the tool and the agent never calls it, the loop says so once
 in the daemon log — `paseo plugin logs paseo-acp-goal` — so the gap is visible
 instead of silent. Making the tool reach the agent on every provider that accepts the
-injection is the work of 0.2.0, and it is not being guessed at here.
+injection is the whole of the planned 0.2.0; it is not implemented here.
 
 ## Configuration
 
@@ -108,9 +139,14 @@ Label keys, all optional except the goal itself:
 
 Workspace file keys, `.acp-goal.json` in the agent's working directory:
 
-- `goal`, `verify`, `maxRounds`, `maxTokens` — honoured only when no label goal
-  exists.
+- `goal`, `verify`, `maxRounds`, `maxTokens` — honoured only when no label or screen
+  goal exists.
 - `done`, `note` — always honoured; this is how an agent reports.
+
+Screen fields, on the ACP goals surface:
+
+- the goal, an optional verification command, an optional round ceiling, and an
+  optional token ceiling.
 
 A verification command does not need to also be the goal's wording, and both
 ceilings can be set together. Defaults: 8 rounds, 2 consecutive no-progress turns
@@ -187,9 +223,9 @@ paseo plugin ls
 paseo plugin logs paseo-acp-goal
 ```
 
-Nothing is configurable from the app on purpose. The loop is set up by whoever
-launches the agent (a label) or by the agent itself (a file), and that keeps the
-plugin out of the UI.
+Nothing else is configurable from the app on purpose: the screen exists to set goals,
+and everything a goal can carry is a field on it. The loop's own lifetimes and sweep
+cadence are constants in `server/loop.ts`.
 
 ## Development
 
@@ -265,26 +301,41 @@ Stated so nobody has to discover them:
 - **The goal tool may not reach the agent.** Whether a provider exposes injected MCP
   servers is decided inside that provider, and Paseo reports nothing about it. The
   sentinel is the route that always works, and the plugin logs a line when an offered
-  tool went unused. Fixing this properly is 0.2.0.
-- **The status row is written but not visually verified.** `timeline.append` against
-  the real daemon is exercised and emits no error, but no one has yet watched the card
-  render in the app — the CLI does not display plugin rows. Treat the row as
-  unconfirmed until somebody opens a session in Paseo.
-- **The token ceiling is unit-tested but not exercised end to end.** Both runs against
-  a live agent finished by sentinel in one round, before approaching a ceiling.
+  tool went unused. This is the largest known gap and the whole of the planned 0.2.0.
+- **Nothing in the app has been seen rendered yet.** The daemon registers the screen's
+  three RPCs and reports them at load, the status row's `timeline.append` is exercised
+  against a real daemon and emits no error, and the whole view layer is a pure function
+  under test — but no one has yet watched the sidebar item, the card, or the screen in
+  Paseo. The CLI cannot show any of them. Treat the visual layer as unconfirmed until
+  somebody opens a session and the screen.
+- **The token ceiling is unit-tested but not exercised end to end.** Three live runs
+  finished by sentinel in one round, before approaching a ceiling. One of them also
+  confirmed the documented gap from the other side: `codewhale` reported no token usage
+  at all, so a token ceiling had nothing to count on that provider.
+- **A launch label cannot be cleared from the screen.** It belongs to whoever launched
+  the agent, so the row is read-only. Clearing it means relaunching without the label.
 - A nudge is a new turn, not a resumption of the old one. Attachments and tool
   effects from the previous turn are not replayed.
 - The token ceiling reads the tokens the agent's own turns report. If a provider
   reports none, the ceiling has nothing to count and only the round ceiling applies.
 - The status row is one per agent and is replaced in place, so a transcript shows the
   current state of the loop rather than its history.
+- A goal's outcome is remembered for 24 hours of inactivity, the same lifetime as the
+  loop accounting. After that the screen shows the agent as having no goal.
 - The plugin watches ACP providers by default and any other provider only when a goal
   label is present. There is no wildcard "every agent" mode, deliberately.
 
 ## Roadmap
 
+Nothing below is implemented in this tree. It is stated here so the repository does not
+read as more finished than it is.
+
 - **0.2.0** — make the goal tool reach the agent on providers that currently decline
-  it, and confirm the status row renders in the app.
+  the injection. The tool is the safer completion route, and it is inert on at least
+  one provider today. Also: exercise the token ceiling end to end, which has never been
+  approached by a live loop.
+- **No version yet** — see the sidebar item, the status card, and the screen rendered in
+  the app, and fix whatever that shows.
 - **Upstream** — Paseo discards the ACP `stopReason` before a plugin can see it, so a
   finished turn and a truncated one are indistinguishable from here
   ([getpaseo/paseo#5283](https://github.com/getpaseo/paseo/issues/5283)). The plugin
