@@ -1,0 +1,6 @@
+{
+  "id": "paseo-acp-goal",
+  "requirements": {
+    "paseo": ">=0.9.1"
+  }
+}

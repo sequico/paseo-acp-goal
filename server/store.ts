@@ -1,0 +1,107 @@
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
+import type { Goal } from "./goal-source";
+
+/**
+ * Loop accounting that outlives a daemon restart, and deliberately nothing else.
+ *
+ * The record embeds the resolved goal rather than copying its fields, so there is
+ * one definition of what a goal is. The round count and the token spend are
+ * persisted so a restart cannot hand an agent a fresh ceiling: a loop that had
+ * spent 6 of its 8 rounds comes back knowing it has 2 left.
+ *
+ * It does not come back *armed*. Nothing re-sends on its own after a restart,
+ * because a loop that silently resumes spending after an unrelated crash is the
+ * kind of surprise this plugin exists to prevent.
+ */
+
+export interface LoopRecord {
+  agentId: string;
+  goal: Goal;
+  /** Nudges already sent. */
+  round: number;
+  /** Consecutive turns that moved nothing. */
+  noProgressStreak: number;
+  /** Digest of the last turn's text, to notice a repeated answer. */
+  lastTextDigest: string | null;
+  /** Cumulative tokens spent by this loop, accumulated per turn. */
+  tokensUsed: number;
+  startedAt: string;
+  updatedAt: string;
+}
+
+export interface PersistedState {
+  version: 1;
+  loops: Record<string, LoopRecord>;
+}
+
+export function paseoHome(): string {
+  const configured = process.env["PASEO_HOME"]?.trim();
+  return configured !== undefined && configured.length > 0
+    ? configured
+    : path.join(homedir(), ".paseo");
+}
+
+export class LoopStore {
+  readonly path: string;
+  private readonly directory: string;
+
+  /** The directory is explicit rather than derived, so a test can own its state. */
+  constructor(directory: string) {
+    this.directory = directory;
+    this.path = path.join(directory, "state.json");
+  }
+
+  static forPlugin(pluginId: string): LoopStore {
+    return new LoopStore(path.join(paseoHome(), "plugin-data", pluginId));
+  }
+
+  async load(): Promise<PersistedState> {
+    const raw = await readFile(this.path, "utf8").catch(() => null);
+    if (raw === null) {
+      return emptyState();
+    }
+    try {
+      const parsed = JSON.parse(raw) as PersistedState;
+      if (parsed.version !== 1 || parsed.loops === null || typeof parsed.loops !== "object") {
+        return emptyState();
+      }
+      return parsed;
+    } catch {
+      // A corrupt state file must not stop the plugin from loading. The loops it
+      // described are forgotten, which is the safe direction to fail.
+      return emptyState();
+    }
+  }
+
+  /** Written through a temporary file so a crash mid-write cannot truncate state. */
+  async save(state: PersistedState): Promise<void> {
+    await mkdir(this.directory, { recursive: true });
+    const temporary = `${this.path}.${process.pid}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    await rename(temporary, this.path);
+  }
+}
+
+function emptyState(): PersistedState {
+  return { version: 1, loops: {} };
+}
+
+export function newLoopRecord(input: {
+  agentId: string;
+  goal: Goal;
+  tokensUsed: number;
+}): LoopRecord {
+  const now = new Date().toISOString();
+  return {
+    agentId: input.agentId,
+    goal: input.goal,
+    round: 0,
+    noProgressStreak: 0,
+    lastTextDigest: null,
+    tokensUsed: input.tokensUsed,
+    startedAt: now,
+    updatedAt: now,
+  };
+}
