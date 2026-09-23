@@ -12,10 +12,13 @@ concludes the unimplemented parts already shipped.
 
 ## 0.1.4
 
-No runtime behaviour changes. The reason this is a release rather than a commit is that
-a catalog scanner reads `package.json.version` in a Git plugin as its change detector,
-so a version that does not move is a repository that does not get re-scanned — the
-release is how this repository asks to be looked at again.
+No runtime behaviour changes, and nothing the package contains changed either — the
+plugin code is byte for byte what `0.1.3` shipped. What differs is the version the
+bundle reports, and the case that made it worth stating: an install pinned to a
+revision keeps reporting that revision's constant until it is updated, and the copy
+running in a daemon here was reporting `0.1.2` while `v0.1.3` was tagged. This release
+moves that forward, and marks a batch of repository-level work that does not travel in
+the package.
 
 - **Dependency automation**, which this repository did not have: pinned actions are now
   raised weekly, and so is the dev toolchain, as one pull request whose CI run means
