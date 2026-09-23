@@ -47,7 +47,7 @@ export const PLUGIN_ID = "paseo-acp-goal";
  * onto loopback HTTP. So `tests/version.test.ts` pins the two together instead, and a
  * bump that reaches one file and not the other fails the gate rather than shipping.
  */
-export const PLUGIN_VERSION = "0.1.3";
+export const PLUGIN_VERSION = "0.1.4";
 /** Carries the goal tool's token into the session so calls can be attributed. */
 export const GOAL_ENV_TOKEN = "PASEO_ACP_GOAL_TOKEN";
 

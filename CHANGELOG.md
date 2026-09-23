@@ -5,10 +5,33 @@ section below for it is that release's notes. The plugin is installed from Git r
 than npm, so a released tag is both the unit of "a revision known to be good" and the
 unit a daemon pins itself to with `--ref`.
 
-Nothing below this line is in the tree except `0.1.3`, `0.1.2`, `0.1.1`, and `0.1.0`.
-There is no released `0.2.0`, and the section under that heading describes work that
-has **not** been written — it is here so that nobody reads this repository and
+Nothing below this line is in the tree except `0.1.4`, `0.1.3`, `0.1.2`, `0.1.1`, and
+`0.1.0`. There is no released `0.2.0`, and the section under that heading describes work
+that has **not** been written — it is here so that nobody reads this repository and
 concludes the unimplemented parts already shipped.
+
+## 0.1.4
+
+No runtime behaviour changes. The reason this is a release rather than a commit is that
+a catalog scanner reads `package.json.version` in a Git plugin as its change detector,
+so a version that does not move is a repository that does not get re-scanned — the
+release is how this repository asks to be looked at again.
+
+- **Dependency automation**, which this repository did not have: pinned actions are now
+  raised weekly, and so is the dev toolchain, as one pull request whose CI run means
+  something. React, react-native, and `@types/react` are excluded on purpose — they are
+  the host SDK's peer dependencies and their ranges do not intersect with newer ones, so
+  they follow the SDK version instead of a schedule.
+- **The toolchain moved**: TypeScript 5.9 to 7.0, esbuild 0.25 to 0.28, oxlint 1.61 to
+  1.83, oxfmt 0.46 to 0.68, `@types/node` 24 to 26. The gate passes unchanged on all of
+  them, which is the only claim being made: nothing here says the majors are
+  behaviourally identical, only that the suite and the linters still agree.
+- **`oxlint`'s new `no-eval` rule is off for one file**, `tests/bundle.test.ts`, whose
+  subject is the daemon's `globalThis.eval` load path. The exception is scoped to that
+  file in `.oxlintrc.json` and the reasoning sits beside the code it excuses.
+- **The lockfile's version is now checked** against `package.json` and the constant the
+  shipped bundle reports, because three releases had gone through the manifest by hand
+  and the lockfile still said `0.1.0`.
 
 ## 0.1.3
 

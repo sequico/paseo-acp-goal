@@ -235,8 +235,8 @@ release's notes — so a daemon can sit on a known revision instead of on whatev
 is today, and move when you say so:
 
 ```bash
-paseo plugin install github:sequico/paseo-acp-goal --ref v0.1.3
-paseo plugin update paseo-acp-goal --ref v0.1.4   # move it to a later release
+paseo plugin install github:sequico/paseo-acp-goal --ref v0.1.4
+paseo plugin update paseo-acp-goal --ref v0.1.5   # move it to a later release
 ```
 
 **From a local directory**, for working on the plugin itself:
