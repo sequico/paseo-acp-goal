@@ -60,5 +60,14 @@
     "max-depth": ["error", { "max": 4 }],
     "max-nested-callbacks": ["error", { "max": 3 }]
   },
-  "ignorePatterns": ["node_modules/**", "package-lock.json"]
+  "ignorePatterns": ["node_modules/**", "package-lock.json"],
+
+  "overrides": [
+    {
+      "files": ["tests/bundle.test.ts"],
+      "rules": {
+        "no-eval": "off"
+      }
+    }
+  ]
 }

@@ -23,6 +23,13 @@ import { SERVER_EXTERNALS, wrapCommonJsBundle } from "./daemon-load-path";
  * precisely because a bundled helper cannot be located from inside the bundle. This
  * test makes that a checked claim rather than a remembered one. The community
  * plugins carry the same test (`omercnet/paseo-agent-monitor`).
+ *
+ * The indirect eval below is therefore the subject under test rather than a shortcut
+ * taken by it, and `.oxlintrc.json` turns `no-eval` off for this file and no other.
+ * That exception is the one place in this repository where a lint rule is disabled,
+ * and it is disabled because the alternative is not testing the daemon's load path at
+ * all — the reason is written here, beside the code it explains, because the config is
+ * strict JSON and cannot carry a comment.
  */
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -77,7 +84,9 @@ describe("the server bundle", () => {
     const { code } = await compileServerBundle();
 
     // The daemon's shape, byte for byte: wrapper, indirect eval, factory called with
-    // a require that answers only the host modules it declares.
+    // a require that answers only the host modules it declares. The indirect form is
+    // load-bearing — a direct `eval` would run in this function's scope rather than the
+    // global one, and would not reproduce what the daemon does at all.
     const wrapped = wrapCommonJsBundle(code);
     const evaluate = (source: string): unknown => (0, eval)(source);
     const factory = evaluate(wrapped) as (require: (name: string) => unknown) => unknown;
