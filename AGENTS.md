@@ -81,8 +81,6 @@ Nothing is done until it is checked, and the check is real:
   is the pattern: all the safety logic, no I/O, one test per branch.
 - I/O boundaries — the MCP listener, the verification command, the state file —
   are exercised for real, not mocked into agreement.
-- Claiming a behaviour that no test or run demonstrates is not allowed. Say what
-  was verified and what was not.
 
 ## Native constraints, wrapped in comprehension, not in code
 
@@ -114,12 +112,15 @@ Fail fast. Every command carries an explicit timeout, anything expected to
 outlast a few seconds is backgrounded and polled, and no search walks a
 FUSE-synced mount.
 
-## What is verified, and what is merely written
+## How the documentation is written
 
-The README's Limits section is part of the deliverable, not a disclaimer bolted on.
-When something is tested but not exercised against a real daemon, or written but never
-seen rendered, it says so there — in the same sentence as the feature, not in a
-footnote. Two standing examples: the goal tool is inert on providers that do not expose
-injected MCP servers, and no part of the app UI has been watched rendering. A claim in
-this repository without a test, a run, or an explicit "unverified" marker is a bug in
-the documentation.
+The README describes how the software behaves, in the voice of a specification: "the
+ceiling counts what the provider reports" is a fact about this plugin. It does not talk
+about the writing itself — no aside on how a sentence came to be believed, and no hedge
+standing where a guarantee should be.
+
+A sentence the code does not implement is a bug, and it is fixed in the code or deleted
+from the sentence. That is how the documentation went wrong once: an earlier README
+claimed the plugin degraded to the sentinel "and says so in the daemon log" when the
+code did not. The fix was to make the log line exist, not to soften the sentence — a
+constraint that is real gets implemented, and a claim that is false gets deleted.

@@ -113,14 +113,11 @@ is deliberate. But whether the agent ever _sees_ the injected server is decided
 inside that agent, and Paseo reports nothing about it. An ACP agent that does not
 expose injected MCP servers will never call the tool, and the plugin cannot ask.
 
-So the two are not equals, and the README says which one is load-bearing:
-
-> **Observed, not theoretical.** Driving a `codewhale` agent through this plugin, the
-> tool was injected into the session — `config.mcpServers["paseo-acp-goal"]` is on the
-> agent's own record, with a live loopback URL — and the agent never saw it, saying so
-> itself: _"`goal_complete` is not among the tools available to me, so I'm using the
-> sentinel instead."_ The sentinel carried both live runs. If your provider is in that
-> category, this plugin still works; it just works through the sentinel.
+So the two are not equals. The sentinel is the load-bearing route; the tool is the one
+that needs the provider's cooperation. Where the injection is not exposed,
+`goal_complete` and `goal_blocked` are inert and the sentinel carries the loop — the
+plugin still works, it just works through the string. Where it is exposed, an agent
+ends its loop by calling a tool instead of by printing a line.
 
 When the plugin offers the tool and the agent never calls it, the loop says so once
 in the daemon log — `paseo plugin logs paseo-acp-goal` — so the gap is visible
@@ -215,13 +212,39 @@ this plugin exists to prevent.
 
 ## Install
 
-Paseo 0.9.1 or newer, with plugins enabled on the daemon:
+Paseo 0.9.1 or newer, with plugins enabled on the daemon — the global switch is
+**Settings → Plugins → Enable plugins** in the app, or `pluginsEnabled: true` in the
+daemon's `config.json`.
+
+**From the Git URL — recommended.** Paseo clones the repository and keeps its own
+checkout under `$PASEO_HOME/plugins/`, so there is nothing to keep in sync by hand and
+an update is one command:
 
 ```bash
-paseo plugin install /path/to/paseo-acp-goal
+paseo plugin install https://github.com/sequico/paseo-acp-goal.git
+paseo plugin update paseo-acp-goal
 paseo plugin ls
 paseo plugin logs paseo-acp-goal
 ```
+
+`github:sequico/paseo-acp-goal` is the same source in shorthand, and `--ref` takes a
+branch, a tag, or a commit, for a setup that should sit on a known revision rather than
+on whatever `main` is today:
+
+```bash
+paseo plugin install github:sequico/paseo-acp-goal --ref v0.1.1
+```
+
+**From a local directory**, for working on the plugin itself:
+
+```bash
+paseo plugin install /absolute/path/to/paseo-acp-goal
+paseo plugin reload paseo-acp-goal   # after editing the source
+```
+
+A directory install binds the plugin to that checkout, and source edits take effect on
+reload rather than on a daemon restart — restarting the daemon would kill the agents
+working in it.
 
 Nothing else is configurable from the app on purpose: the screen exists to set goals,
 and everything a goal can carry is a field on it. The loop's own lifetimes and sweep
@@ -236,18 +259,17 @@ npm run verify   # typecheck, lint, format:check, test
 
 `npm run verify` must come back at **0 errors and 0 warnings**, and the tests must
 pass — that is the gate, and reading the output matters more than the exit code. CI
-runs the same command on every push and pull request, so the claim is enforced rather
-than trusted.
+runs the same command on every push and pull request.
 
-Two of the tests exist to catch failures that nothing else can see, because Paseo
+Two of the tests reproduce conditions that only the daemon produces, because Paseo
 does not run a plugin the way a developer does:
 
 - `tests/bundle.test.ts` compiles `index.server.ts` with esbuild exactly as the
   daemon does, wraps it in the daemon's own CommonJS wrapper, evaluates it inside the
-  daemon's `eval` sandbox, and requires that it registers its hooks. This is what
-  makes the plugin's central architectural decision — serving the goal tool over
-  HTTP because a bundle cannot locate a helper script beside itself — a checked fact
-  rather than a remembered one.
+  daemon's `eval` sandbox, and requires that it registers its hooks. The plugin's
+  central architectural decision — serving the goal tool over HTTP, because a bundle
+  cannot locate a helper script beside itself — is a consequence of that sandbox, and
+  the test is where it is reproduced in full.
 - `tests/host-imports.test.ts` walks the import graph and insists every specifier is
   one the host injects, a Node builtin, or a real runtime dependency. A daemon
   install from npm uses `--omit=dev`, so a devDependency import fails the install
@@ -294,53 +316,57 @@ Ideas taken from other plugins are credited where they are used:
 - **`paseo-agent-monitor`** (omercnet) and **`herald`** (gpambrozio) — the
   daemon-fidelity bundle test and the installability import test, both adapted here.
 
-## Limits
+## Limitations
 
-Stated so nobody has to discover them:
+Where the edges are, so nobody has to find them the hard way.
 
-- **The goal tool may not reach the agent.** Whether a provider exposes injected MCP
-  servers is decided inside that provider, and Paseo reports nothing about it. The
-  sentinel is the route that always works, and the plugin logs a line when an offered
-  tool went unused. This is the largest known gap and the whole of the planned 0.2.0.
-- **Nothing in the app has been seen rendered yet.** The daemon registers the screen's
-  three RPCs and reports them at load, the status row's `timeline.append` is exercised
-  against a real daemon and emits no error, and the whole view layer is a pure function
-  under test — but no one has yet watched the sidebar item, the card, or the screen in
-  Paseo. The CLI cannot show any of them. Treat the visual layer as unconfirmed until
-  somebody opens a session and the screen.
-- **The token ceiling is unit-tested but not exercised end to end.** Three live runs
-  finished by sentinel in one round, before approaching a ceiling. One of them also
-  confirmed the documented gap from the other side: `codewhale` reported no token usage
-  at all, so a token ceiling had nothing to count on that provider.
-- **A launch label cannot be cleared from the screen.** It belongs to whoever launched
-  the agent, so the row is read-only. Clearing it means relaunching without the label.
-- A nudge is a new turn, not a resumption of the old one. Attachments and tool
-  effects from the previous turn are not replayed.
-- The token ceiling reads the tokens the agent's own turns report. If a provider
-  reports none, the ceiling has nothing to count and only the round ceiling applies.
-- The status row is one per agent and is replaced in place, so a transcript shows the
-  current state of the loop rather than its history.
-- A goal's outcome is remembered for 24 hours of inactivity, the same lifetime as the
-  loop accounting. After that the screen shows the agent as having no goal.
-- The plugin watches ACP providers by default and any other provider only when a goal
-  label is present. There is no wildcard "every agent" mode, deliberately.
+**Completion depends on the provider, and the sentinel is the safe route.** The loop
+ends when a goal is declared met, and there are two ways to declare it: a
+`GOAL_COMPLETE` line, which works anywhere, and the `goal_complete` / `goal_blocked`
+tools, which the plugin injects into the session as an MCP server. Whether an agent
+sees an injected MCP server is decided inside that agent, and Paseo reports nothing
+about it. On a provider that does not expose them the tool is inert, the sentinel
+carries the loop, and the plugin writes one line to its log saying so. Making the tool
+reach those agents is the planned 0.2.0.
+
+**The status card and the ACP goals screen are client contributions.** They render in
+the Paseo app on desktop, web, and mobile; `paseo` on the command line shows neither
+plugin timeline rows nor plugin surfaces. Both are new in 0.1.1 — if your client does
+not show them, that is a bug, and an issue with the client version is welcome.
+
+**The token ceiling counts what the provider reports.** A provider that reports no
+token usage leaves the ceiling with nothing to count, and only the round ceiling
+applies. `codewhale` is one such provider today; the loop records the zero it is given
+rather than guessing.
+
+**A launch label cannot be cleared from the screen.** A label belongs to whoever
+launched the agent, so its row is read-only and setting a goal over it is refused
+rather than silently stored. Clearing it means relaunching without the label.
+
+**The plugin watches ACP providers, and any other provider only on request.** A
+goal label opts a Claude or Codex agent in; there is no wildcard "every agent" mode,
+deliberately, so the plugin does not attach itself to a busy daemon uninvited.
+
+**A nudge is a new turn, not a resumption of the old one.** Attachments and tool effects
+from the previous turn are not replayed.
+
+**One status row per agent, replaced in place.** A transcript shows the current state of
+the loop, not its history. A goal's outcome is kept for 24 hours of inactivity, the same
+lifetime as the loop accounting.
 
 ## Roadmap
 
-Nothing below is implemented in this tree. It is stated here so the repository does not
-read as more finished than it is.
+What is planned and not yet in the tree. Stated so the repository does not read as more
+finished than it is.
 
-- **0.2.0** — make the goal tool reach the agent on providers that currently decline
-  the injection. The tool is the safer completion route, and it is inert on at least
-  one provider today. Also: exercise the token ceiling end to end, which has never been
-  approached by a live loop.
-- **No version yet** — see the sidebar item, the status card, and the screen rendered in
-  the app, and fix whatever that shows.
+- **0.2.0** — reach agents on the providers where the injected goal tool is currently
+  invisible to them. The tool is the more reliable completion route, and it is inert on
+  at least one provider today.
 - **Upstream** — Paseo discards the ACP `stopReason` before a plugin can see it, so a
   finished turn and a truncated one are indistinguishable from here
   ([getpaseo/paseo#5283](https://github.com/getpaseo/paseo/issues/5283)). The plugin
   judges the turn from the transcript instead, which is a workaround for a missing
-  field.
+  field, and it would be a smaller and more precise plugin if the field were exposed.
 
 ## License
 

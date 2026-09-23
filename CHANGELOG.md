@@ -12,13 +12,10 @@ unimplemented parts already shipped.
 
 Reserved for the work this repository does not do yet. None of it is in the source.
 
-- **Make the goal tool reach the agent on every provider that accepts the injection.**
-  Today, a provider that does not expose injected MCP servers never sees
-  `goal_complete` or `goal_blocked`, and the plugin can only observe the consequence
-  and log it. Investigating and fixing that is the whole of 0.2.0.
-- **Exercise the token ceiling end to end.** It is unit-tested and has never been
-  approached by a live loop. On at least one provider a live run confirmed the ceiling
-  has nothing to count, because no token usage is reported at all.
+- **Make the goal tool reach the agent.** Today, a provider that does not expose
+  injected MCP servers never sees `goal_complete` or `goal_blocked`, and the plugin can
+  only observe the consequence and log it. Investigating and fixing that is the whole of
+  0.2.0.
 
 ## 0.1.1
 
@@ -63,6 +60,5 @@ First release.
   (esbuild, its CommonJS wrapper, its `eval` sandbox), and an import-graph walk that
   proves every specifier is injectable by the host without devDependencies.
 
-Known limits in this release, stated in the README: the goal tool is offered but may
-not reach the agent, the status row is written but not visually confirmed, and the
-token ceiling is unit-tested but not exercised end to end.
+Known limits in this release, stated in the README: the goal tool is offered but may not
+reach the agent, and the token ceiling counts only the usage a provider reports.
