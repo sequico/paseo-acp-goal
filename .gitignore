@@ -2,3 +2,7 @@ node_modules/
 .worktree/
 .DS_Store
 *.log
+
+# Local agent-workspace configuration. The project law is AGENTS.md; anything here is
+# a developer's own setup and does not belong in a published tree.
+.codewhale/

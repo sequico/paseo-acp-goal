@@ -61,19 +61,40 @@ told to declare a goal can still choose to. Once a label goal exists, the file m
 no longer redefine the goal, the verification command, or the ceiling — it may only
 report. Without that fence an agent could narrow its own goal and then "finish".
 
-## The goal tool
+## Completion: the sentinel decides, the tool is an upgrade
 
-When Paseo is about to start an ACP agent, the plugin injects an MCP server into the
-session, giving the agent two tools:
+A loop ends when the goal is met, and the plugin offers an agent **two** ways to say
+so.
+
+**The sentinel always works.** Finishing a turn with a line containing only
+`GOAL_COMPLETE` — configurable with `paseo-acp-goal-done` — ends the loop. It needs
+nothing from the provider, and it is what the nudge asks for first.
+
+**The goal tool is offered, not guaranteed.** When Paseo is about to start an ACP
+agent, the plugin injects an MCP server into the session carrying two tools:
 
 - `goal_complete(summary?)` — the goal is met, end the loop.
 - `goal_blocked(reason)` — a human decision is needed, pause the loop.
 
-A tool beats a sentinel string, because a string can be emitted by accident while
-explaining the protocol, inside a diff, or in a quoted log, whereas a tool call is a
-deliberate act. If the tool cannot be offered — an unsupported transport, or the
-listener failed to start — the plugin degrades to the sentinel and says so in the
-daemon log. Nothing else changes.
+A tool call is better than a string, because a string can be emitted by accident
+while explaining the protocol, inside a diff, or in a quoted log, whereas a tool call
+is deliberate. But whether the agent ever _sees_ the injected server is decided
+inside that agent, and Paseo reports nothing about it. An ACP agent that does not
+expose injected MCP servers will never call the tool, and the plugin cannot ask.
+
+So the two are not equals, and the README says which one is load-bearing:
+
+> **Observed, not theoretical.** Driving a `codewhale` agent through this plugin, the
+> tool was injected into the session — `config.mcpServers["paseo-acp-goal"]` is on the
+> agent's own record, with a live loopback URL — and the agent never saw it, saying so
+> itself: _"`goal_complete` is not among the tools available to me, so I'm using the
+> sentinel instead."_ The sentinel carried both live runs. If your provider is in that
+> category, this plugin still works; it just works through the sentinel.
+
+When the plugin offers the tool and the agent never calls it, the loop says so once
+in the daemon log — `paseo plugin logs paseo-acp-goal` — so the gap is visible
+instead of silent. Making the tool reach the agent on every provider that accepts the
+injection is the work of 0.2.0, and it is not being guessed at here.
 
 ## Configuration
 
@@ -178,7 +199,9 @@ npm run verify   # typecheck, lint, format:check, test
 ```
 
 `npm run verify` must come back at **0 errors and 0 warnings**, and the tests must
-pass — that is the gate, and reading the output matters more than the exit code.
+pass — that is the gate, and reading the output matters more than the exit code. CI
+runs the same command on every push and pull request, so the claim is enforced rather
+than trusted.
 
 Two of the tests exist to catch failures that nothing else can see, because Paseo
 does not run a plugin the way a developer does:
@@ -239,6 +262,16 @@ Ideas taken from other plugins are credited where they are used:
 
 Stated so nobody has to discover them:
 
+- **The goal tool may not reach the agent.** Whether a provider exposes injected MCP
+  servers is decided inside that provider, and Paseo reports nothing about it. The
+  sentinel is the route that always works, and the plugin logs a line when an offered
+  tool went unused. Fixing this properly is 0.2.0.
+- **The status row is written but not visually verified.** `timeline.append` against
+  the real daemon is exercised and emits no error, but no one has yet watched the card
+  render in the app — the CLI does not display plugin rows. Treat the row as
+  unconfirmed until somebody opens a session in Paseo.
+- **The token ceiling is unit-tested but not exercised end to end.** Both runs against
+  a live agent finished by sentinel in one round, before approaching a ceiling.
 - A nudge is a new turn, not a resumption of the old one. Attachments and tool
   effects from the previous turn are not replayed.
 - The token ceiling reads the tokens the agent's own turns report. If a provider
@@ -247,6 +280,16 @@ Stated so nobody has to discover them:
   current state of the loop rather than its history.
 - The plugin watches ACP providers by default and any other provider only when a goal
   label is present. There is no wildcard "every agent" mode, deliberately.
+
+## Roadmap
+
+- **0.2.0** — make the goal tool reach the agent on providers that currently decline
+  it, and confirm the status row renders in the app.
+- **Upstream** — Paseo discards the ACP `stopReason` before a plugin can see it, so a
+  finished turn and a truncated one are indistinguishable from here
+  ([getpaseo/paseo#5283](https://github.com/getpaseo/paseo/issues/5283)). The plugin
+  judges the turn from the transcript instead, which is a workaround for a missing
+  field.
 
 ## License
 

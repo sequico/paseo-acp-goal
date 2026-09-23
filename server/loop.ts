@@ -95,6 +95,10 @@ interface Runtime {
   awaitingEnd: Set<string>;
   /** Agents we have seen a turn boundary for, which is what makes a duplicate visible. */
   everStarted: Set<string>;
+  /** Agents that have actually called the goal tool, as opposed to merely being offered it. */
+  toolUsed: Set<string>;
+  /** Agents already warned that the offered tool went unused, so the line is said once. */
+  toolUnusedWarned: Set<string>;
   acpProviders: Set<string>;
   store: LoopStore;
 }
@@ -175,8 +179,13 @@ function takeToolSignal(runtime: Runtime, agentId: string, cwd: string): ToolSig
   }
 
   const signal = runtime.signals.get(token) ?? null;
+  if (signal === null) {
+    return null;
+  }
   runtime.signals.delete(token);
-  return signal === null ? null : { kind: signal.kind, detail: signal.detail };
+  runtime.toolUsed.add(agentId);
+  runtime.toolUnusedWarned.delete(agentId);
+  return { kind: signal.kind, detail: signal.detail };
 }
 
 function toStatus(
@@ -235,6 +244,34 @@ function forget(runtime: Runtime, agentId: string): void {
   runtime.awaitingEnd.delete(agentId);
 }
 
+/**
+ * Say so, once, when an agent finishes without ever calling a tool it was offered.
+ *
+ * The plugin cannot ask whether a provider exposed the injected MCP server — that is
+ * decided inside the agent, and Paseo reports nothing about it. What it *can* observe
+ * is the consequence: the tool was offered, the agent never called it, and the loop
+ * was ended by something else. That is worth a line in the log, because otherwise the
+ * gap is silent and a reader of the README would go looking for a warning that never
+ * comes.
+ */
+function noteToolUnused(runtime: Runtime, agentId: string, reason: StopReason): void {
+  if (reason === "tool-complete") {
+    return;
+  }
+  if (!runtime.agentToToken.has(agentId) || runtime.toolUsed.has(agentId)) {
+    return;
+  }
+  if (runtime.toolUnusedWarned.has(agentId)) {
+    return;
+  }
+  runtime.toolUnusedWarned.add(agentId);
+  console.log(
+    `[${PLUGIN_ID}] Agent ${agentId} ended its goal (${reason}) without ever calling the goal tool, ` +
+      `which was offered to it. This provider may not expose injected MCP servers over ACP; the ` +
+      `sentinel route carried the turn instead.`,
+  );
+}
+
 function prune(runtime: Runtime, timings: GoalLoopTimings): void {
   const loopCutoff = Date.now() - timings.recordTtlMs;
   for (const [agentId, record] of runtime.loops) {
@@ -256,6 +293,20 @@ function prune(runtime: Runtime, timings: GoalLoopTimings): void {
   for (const token of runtime.signals.keys()) {
     if (!runtime.pendingCreates.has(token) && !bound.has(token)) {
       runtime.signals.delete(token);
+    }
+  }
+
+  // The tool-use bookkeeping is per agent and only meaningful while that agent still
+  // has a loop or an open goal-tool binding, so it is dropped with them rather than
+  // growing for the life of the daemon.
+  for (const agentId of runtime.toolUsed) {
+    if (!runtime.loops.has(agentId) && !runtime.agentToToken.has(agentId)) {
+      runtime.toolUsed.delete(agentId);
+    }
+  }
+  for (const agentId of runtime.toolUnusedWarned) {
+    if (!runtime.loops.has(agentId) && !runtime.agentToToken.has(agentId)) {
+      runtime.toolUnusedWarned.delete(agentId);
     }
   }
 }
@@ -368,6 +419,9 @@ async function handleTurnEnded({ runtime, gateway, event, ready }: TurnContext):
     if (RESUMABLE_STOPS.has(decision.reason)) {
       runtime.loops.set(agent.id, next);
     } else {
+      // The diagnostic reads the goal-tool binding, so it runs before `forget`
+      // removes it. Ordering matters here and is the reason this is not a one-liner.
+      noteToolUnused(runtime, agent.id, decision.reason);
       forget(runtime, agent.id);
     }
 
@@ -454,6 +508,8 @@ export function registerGoalLoop(
     pendingCreates: new Map(),
     awaitingEnd: new Set(),
     everStarted: new Set(),
+    toolUsed: new Set(),
+    toolUnusedWarned: new Set(),
     acpProviders: new Set(),
     store:
       options.stateDirectory === undefined
@@ -580,6 +636,8 @@ export function registerGoalLoop(
     runtime.pendingCreates.clear();
     runtime.awaitingEnd.clear();
     runtime.everStarted.clear();
+    runtime.toolUsed.clear();
+    runtime.toolUnusedWarned.clear();
     const mcp = await mcpReady;
     await mcp?.close();
   };

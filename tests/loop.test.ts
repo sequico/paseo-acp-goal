@@ -44,6 +44,8 @@ const AGENT: PluginHookAgent = {
 interface Recorded {
   sends: Array<{ agentId: string; text: string }>;
   byAgent: Map<string, GoalStatus[]>;
+  /** Everything the loop wrote to stdout, so its diagnostics are testable. */
+  logs: string[];
 }
 
 interface HarnessOptions {
@@ -89,7 +91,14 @@ function assistantTurn(text: string): AgentTimelineItem[] {
 
 async function startHarness(options: HarnessOptions = {}): Promise<Harness> {
   const dir = await mkdtemp(path.join(tmpdir(), "acp-goal-"));
-  const recorded: Recorded = { sends: [], byAgent: new Map() };
+  const recorded: Recorded = { sends: [], byAgent: new Map(), logs: [] };
+
+  // The loop logs through `console.log`, and its diagnostics are part of what is
+  // being verified, so stdout is captured for the duration and restored after.
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => {
+    recorded.logs.push(args.map((value) => String(value)).join(" "));
+  };
 
   const configPath = path.join(dir, "config.json");
   await writeFile(
@@ -244,6 +253,7 @@ async function startHarness(options: HarnessOptions = {}): Promise<Harness> {
     },
     async dispose() {
       await dispose();
+      console.log = originalLog;
       await rm(dir, { recursive: true, force: true });
     },
   };
@@ -260,6 +270,11 @@ function sendsFor(harness: Harness, agentId = AGENT.id): string[] {
 /** The round of every status written for an agent, in order. */
 function roundsFor(harness: Harness, agentId = AGENT.id): number[] {
   return (harness.recorded.byAgent.get(agentId) ?? []).map((status) => status.round);
+}
+
+/** The lines the loop wrote about an offered goal tool that went unused. */
+function toolUnusedWarnings(harness: Harness): string[] {
+  return harness.recorded.logs.filter((line) => line.includes("without ever calling"));
 }
 
 /** The token and URL the plugin injected for a creation. */
@@ -709,6 +724,63 @@ describe("the goal tool round trip", () => {
     await withHarness({ acpProviders: ["someone-else"] }, async (harness) => {
       const result = await harness.create(createRequest(harness.dir, "claude"));
       assert.equal(result, undefined);
+    });
+  });
+});
+
+describe("the goal-tool diagnostic", () => {
+  it("says so once when an offered tool was never called", async () => {
+    // This is the observed reality on an ACP provider that does not expose injected MCP
+    // servers: the tool is offered, the agent never calls it, and the loop ends by
+    // sentinel. The README points a reader at this line, so it has to exist.
+    await withHarness({ labels: { "paseo-acp-goal": "x" } }, async (harness) => {
+      await harness.create(createRequest(harness.dir));
+      await harness.turn(assistantTurn("done\nGOAL_COMPLETE"));
+      await harness.turn(assistantTurn("done again\nGOAL_COMPLETE"));
+
+      const warnings = toolUnusedWarnings(harness);
+      assert.equal(warnings.length, 1, "the diagnostic is said once, not on every turn");
+      assert.match(warnings[0] ?? "", /may not expose injected MCP servers/);
+    });
+  });
+
+  it("stays quiet when the agent did use the tool", async () => {
+    await withHarness({ labels: { "paseo-acp-goal": "x" } }, async (harness) => {
+      const created = await harness.create(createRequest(harness.dir));
+      assert.ok(created);
+      const { url, token } = injected(created);
+      harness.sessionOpen({
+        agentId: AGENT.id,
+        workspaceId: "ws-1",
+        provider: "codewhale",
+        cwd: harness.dir,
+        reason: "create",
+        purpose: "interactive",
+        env: { [GOAL_ENV_TOKEN]: token },
+      });
+      await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: 1,
+          method: "tools/call",
+          params: { name: "goal_complete", arguments: {} },
+        }),
+      });
+      await harness.turn(assistantTurn("all done"));
+
+      assert.equal(toolUnusedWarnings(harness).length, 0, "a tool that worked needs no diagnostic");
+    });
+  });
+
+  it("stays quiet for an agent that never had the tool injected", async () => {
+    await withHarness({ acpProviders: [], labels: { "paseo-acp-goal": "x" } }, async (harness) => {
+      await harness.turn(assistantTurn("done\nGOAL_COMPLETE"));
+      assert.equal(
+        toolUnusedWarnings(harness).length,
+        0,
+        "an agent that was never offered the tool has nothing to warn about",
+      );
     });
   });
 });

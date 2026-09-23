@@ -1,0 +1,40 @@
+name: verify
+
+# The gate this repository declares is 0 errors, 0 warnings, and a passing suite —
+# and until now nothing but a developer's shell enforced it. For a plugin whose value
+# is its guards, "it passed on my machine" is a much weaker claim than a green check
+# on the commit.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # The pinned Node LTS. `.nvmrc` is the human-facing copy of the same fact.
+          node-version-file: .nvmrc
+          cache: npm
+
+      # `npm ci` rather than `install`, so a lockfile that does not match
+      # package.json fails here instead of drifting silently in a checkout.
+      - run: npm ci
+
+      # `npm run verify` is typecheck, lint --deny-warnings --max-warnings=0,
+      # format:check, and the test suite. Exit 0 means exactly zero of everything.
+      - run: npm run verify
+
+      # The daemon installs from Git with no package manager of its own and evaluates
+      # the server bundle with `globalThis.eval` in a scope that has no `import.meta`
+      # and no `__dirname`. Both facts are asserted by the suite, and both are worth
+      # failing the build over when they change.
