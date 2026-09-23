@@ -123,15 +123,25 @@ describe("the server bundle", () => {
       throw new Error("contribute must return a cleanup function");
     }
 
-    assert.deepEqual(
-      [...registered].sort(),
-      ["agent.archived", "agent.create", "agent.session_open", "agent.turn_ended"],
-      "the plugin registers exactly the four hooks it declares, and no others",
-    );
-
-    // Cleanup closes the listener it opened, so the test process can exit.
-    const result: unknown = cleanup();
-    await Promise.resolve(result);
+    // Cleanup runs before any assertion, because it closes the listener the plugin
+    // opened. An assertion that threw first would leak that listener and hang the
+    // whole test process instead of failing one test.
+    try {
+      const result: unknown = cleanup();
+      await Promise.resolve(result);
+    } finally {
+      assert.deepEqual(
+        [...registered].sort(),
+        [
+          "agent.archived",
+          "agent.create",
+          "agent.session_open",
+          "agent.turn_ended",
+          "agent.turn_started",
+        ],
+        "the plugin registers exactly the five hooks it declares, and no others",
+      );
+    }
   });
 
   it("never reaches for import.meta or __dirname at module scope", async () => {

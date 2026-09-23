@@ -29,6 +29,11 @@ acceptance criterion, and the round number, because a goal that does not survive
 context compaction is a closed bug in Paseo (`getpaseo/paseo#3210`) and not a
 hypothetical.
 
+A turn is nudged at most once. Duplicate `agent.turn_ended` events are detected and
+ignored — `turnId` cannot be the key, since Paseo documents that it "can repeat after
+a session reopens" — and the detection fails open, because dropping a real turn
+silently is worse than one redundant nudge.
+
 ## Two ways to declare a goal
 
 **A label**, set by whoever launches the agent. Authoritative:
@@ -77,6 +82,7 @@ Label keys, all optional except the goal itself:
 - `paseo-acp-goal` — the goal. Its presence is what watches a non-ACP agent.
 - `paseo-acp-goal-verify` — a shell command; exit 0 means done.
 - `paseo-acp-goal-max` — round ceiling, 1 to 50. Default 8.
+- `paseo-acp-goal-max-tokens` — cumulative token ceiling. Unset means no ceiling.
 - `paseo-acp-goal-done` — the sentinel line. Default `GOAL_COMPLETE`.
 
 Workspace file keys, `.acp-goal.json` in the agent's working directory:
@@ -85,8 +91,10 @@ Workspace file keys, `.acp-goal.json` in the agent's working directory:
   exists.
 - `done`, `note` — always honoured; this is how an agent reports.
 
-Defaults: 8 rounds, 2 consecutive no-progress turns tolerated, no token ceiling, 15
-minute verification timeout, output capped at 1500 characters in the status row.
+A verification command does not need to also be the goal's wording, and both
+ceilings can be set together. Defaults: 8 rounds, 2 consecutive no-progress turns
+tolerated, no token ceiling, 15 minute verification timeout, output capped at 1500
+characters in the status row.
 
 ## What stops a loop
 
@@ -111,6 +119,21 @@ Every rule below is a case in `tests/guard.test.ts`, and the order matters:
 - **Two consecutive turns that moved nothing** — the same text twice with no tool
   call. This is the rule that catches an agent politely restating its own blockage
   forever.
+
+### The two ceilings do not share a scope
+
+This is deliberate and load-bearing:
+
+- **Rounds bound one goal.** Changing the goal resets the round budget and the stall
+  detection, because a new goal is new work.
+- **Tokens bound one agent**, and are never reset by changing the goal. An agent that
+  could zero its own spend by rewriting its goal file would have an unbounded budget,
+  and the ceiling would be decorative. The spend survives a goal change, a paused
+  loop resumed by an answer, and a daemon restart.
+
+Accounting is forgotten after 24 hours of no loop activity, which also drops the
+spend — a goal left alone for a day is over, and holding an unbounded record set
+forever would be worse.
 
 ## Security
 
@@ -202,8 +225,8 @@ Ideas taken from other plugins are credited where they are used:
 - **`loop-verify`** (HiepPP/hiep-paseo-plugin) — the label-driven loop with an
   optional verification command, and pausing on a question instead of pushing on.
 - **`paseo-minimax-resumer`** (ilteoood) — sending a follow-up from
-  `agent.turn_ended`, with a per-agent pending guard so a duplicate event cannot
-  double-send.
+  `agent.turn_ended`, and keeping a per-agent pending record so a scheduled resume is
+  not queued twice.
 - **`chat-resume`** (panrafal/paseo-plugins) — reading the turn tail through the
   daemon, which is what makes this work for ACP providers that keep no transcript on
   disk.

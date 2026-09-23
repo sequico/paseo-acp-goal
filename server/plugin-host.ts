@@ -13,6 +13,10 @@ import type { AgentTimelineItem, HookAgent, PaseoApi } from "./host-types";
  * lets its tests drive it with plain functions instead of a fake framework.
  */
 
+export interface TurnStartedEvent {
+  agent: HookAgent;
+}
+
 export interface TurnEndedEvent {
   agent: HookAgent;
   outcome: PluginTurnOutcome;
@@ -31,6 +35,7 @@ export type CreateRequest = PluginBeforeRequests["agent.create"];
 export type SessionOpenRequest = PluginBeforeRequests["agent.session_open"];
 
 export interface GoalLoopHost {
+  onTurnStarted(handler: (event: TurnStartedEvent) => void): () => void;
   onTurnEnded(handler: (event: TurnEndedEvent, context: HookContext) => void): () => void;
   onArchived(handler: (event: ArchivedEvent, context: HookContext) => void): () => void;
   /** Resolves to the request to change, or to `undefined` to leave it alone. */
@@ -40,6 +45,11 @@ export interface GoalLoopHost {
 
 export function pluginHost(server: PluginServerContext): GoalLoopHost {
   return {
+    onTurnStarted: (handler) =>
+      server.on("agent.turn_started", (event) => {
+        handler({ agent: event.agent });
+      }),
+
     onTurnEnded: (handler) =>
       server.on("agent.turn_ended", (event, context) => {
         handler(

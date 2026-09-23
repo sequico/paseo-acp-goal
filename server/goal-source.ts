@@ -20,6 +20,7 @@ import type { GoalSource } from "../shared/goal-status";
 
 export const GOAL_LABEL = "paseo-acp-goal";
 export const GOAL_MAX_ROUNDS_LABEL = "paseo-acp-goal-max";
+export const GOAL_MAX_TOKENS_LABEL = "paseo-acp-goal-max-tokens";
 export const GOAL_VERIFY_LABEL = "paseo-acp-goal-verify";
 export const GOAL_DONE_LABEL = "paseo-acp-goal-done";
 
@@ -31,6 +32,17 @@ export const DEFAULT_MAX_NO_PROGRESS_ROUNDS = 2;
 export const DEFAULT_SENTINEL = "GOAL_COMPLETE";
 export const MAX_ROUNDS_CEILING = 50;
 
+/**
+ * A goal, and the scope of each of its two ceilings.
+ *
+ * The ceilings do not share a scope, deliberately:
+ *
+ *  - `maxRounds` bounds one *goal*, because a new goal is new work and deserves its
+ *    own round budget.
+ *  - `maxTokens` bounds one *agent*, and is never reset by changing the goal. An
+ *    agent that could zero its own spend by rewriting the goal file would have an
+ *    unbounded budget and the guard would be decorative.
+ */
 export interface Goal {
   goal: string;
   verify: string | null;
@@ -97,7 +109,7 @@ export function goalFromLabels(labels: Record<string, string> | null | undefined
     verify: trimmed(labels?.[GOAL_VERIFY_LABEL]),
     maxRounds: Number.isFinite(rounds) && rounds > 0 ? clampRounds(rounds) : DEFAULT_MAX_ROUNDS,
     sentinel: trimmed(labels?.[GOAL_DONE_LABEL]) ?? DEFAULT_SENTINEL,
-    maxTokens: null,
+    maxTokens: positiveOrNull(Number(labels?.[GOAL_MAX_TOKENS_LABEL])),
     source: "label",
   };
 }

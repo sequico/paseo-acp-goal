@@ -30,22 +30,29 @@ export type StopReason =
   | "token-budget"
   | "no-progress";
 
-export interface GuardSignals {
+/**
+ * The signals the rules above a measurement read. Kept separate so a caller can ask
+ * "is a verification even worth running?" without inventing a measurement value.
+ */
+export interface PreVerificationSignals {
+  /** The agent was archived while this turn was in flight. */
+  archived: boolean;
   outcome: "completed" | "failed" | "canceled";
   /** Set when the turn was canceled, for the report. */
   cancelReason: string | null;
+  /** What the goal tool reported, attributed to this agent. */
+  toolSignal: ToolSignal | null;
+}
+
+export interface GuardSignals extends PreVerificationSignals {
   /** Set when the turn failed, for the report. */
   failureMessage: string | null;
-  /** The agent was archived while this turn was in flight. */
-  archived: boolean;
   /** A permission or question request is waiting on a human right now. */
   permissionPending: boolean;
   /** `null` when no verification command is configured, which is what lets a claim decide. */
   verifyPassed: boolean | null;
   /** The completion sentinel or the workspace file's `done` flag was found. */
   goalDeclaredMet: boolean;
-  /** What the goal tool reported, attributed to this agent. */
-  toolSignal: ToolSignal | null;
   /** The turn's last line is a question. */
   endsWithQuestion: boolean;
   /** The turn produced any text or tool call at all. */
@@ -53,9 +60,9 @@ export interface GuardSignals {
 }
 
 export interface GuardLimits {
-  /** Ceiling on nudges sent to one agent for one goal. */
+  /** Ceiling on nudges sent for one goal. */
   maxRounds: number;
-  /** Ceiling on cumulative tokens for the whole loop, or null for no ceiling. */
+  /** Ceiling on cumulative tokens for one agent, or null for no ceiling. */
   maxTokens: number | null;
   /** Consecutive no-progress turns tolerated before the loop gives up. */
   maxNoProgressRounds: number;
@@ -92,20 +99,21 @@ export type GuardDecision =
  * `verifyPassed === null`, which is the documented way of saying "no verification
  * command is configured". An agent that could declare victory over a failing test
  * would make the verification decorative.
+ *
+ * The decision is split in two so the caller can know, *without* running the
+ * verification, whether it is even consulted. `decideBeforeVerification` holds the
+ * rules that outrank a measurement; `decide` runs those first and then the rest.
+ * The ordering therefore lives in this module once, and `loop.ts` substitutes no
+ * copy of it.
  */
 export function decide(input: GuardInput): GuardDecision {
+  const early = decideBeforeVerification(input.signals);
+  if (early !== null) {
+    return early;
+  }
+
   const { signals, limits, tokensUsed } = input;
 
-  if (signals.archived) {
-    return stop("agent-archived");
-  }
-  if (signals.outcome === "canceled") {
-    return stop("canceled", signals.cancelReason);
-  }
-
-  if (signals.toolSignal?.kind === "blocked") {
-    return stop("tool-blocked", signals.toolSignal.detail);
-  }
   if (signals.verifyPassed === true) {
     return stop("verify-passed");
   }
@@ -143,6 +151,28 @@ export function decide(input: GuardInput): GuardDecision {
   }
 
   return { action: "continue", nextRound };
+}
+
+/**
+ * The rules that stop a turn before a measurement is worth taking.
+ *
+ * Returns `null` when the decision needs the verification result — which is most of
+ * the time, because a passing command beats a failed turn, a claim, and a question.
+ * The caller uses this to avoid running a command whose result cannot change the
+ * outcome, and it is the same code `decide` runs first, so the two can never
+ * disagree.
+ */
+export function decideBeforeVerification(signals: PreVerificationSignals): GuardDecision | null {
+  if (signals.archived) {
+    return stop("agent-archived");
+  }
+  if (signals.outcome === "canceled") {
+    return stop("canceled", signals.cancelReason);
+  }
+  if (signals.toolSignal?.kind === "blocked") {
+    return stop("tool-blocked", signals.toolSignal.detail);
+  }
+  return null;
 }
 
 function stop(reason: StopReason, detail: string | null = null): GuardDecision {
