@@ -524,6 +524,12 @@ async function handleTurnEnded({ runtime, gateway, event, ready }: TurnContext):
   // no outcome and leaving the old one would describe it as stopped.
   next.lastOutcome = null;
   runtime.loops.set(agent.id, next);
+  // The same clearing has to reach the remembered outcome, and by deletion rather than
+  // by assigning `next`: `persist` writes both maps into one object, so a stale copy
+  // left there would stand in for live accounting and a restart would come back
+  // believing the loop had stopped, at the round it stopped on. The live record is the
+  // only one that describes a nudged loop.
+  runtime.completedLoops.delete(agent.id);
   await gateway.writeStatus(agent.id, toStatus(next, "running", "continue", null, verifyOutput));
 
   try {

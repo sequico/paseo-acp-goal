@@ -60,9 +60,11 @@ writes one line to its log rather than pretending the tool was seen.
 rounds bound one goal, so a new goal starts with a new budget, while tokens bound one
 agent and are never reset by changing the goal, a resumed pause, or a daemon restart. An
 agent that could zero its own spend by rewriting its goal file would have an unbounded
-budget. The outcome of a finished goal is remembered — state and reason — for the same
-24-hour accounting lifetime, so the screen can say how a loop finished rather than losing
-it the moment the loop is dropped.
+budget. A live loop and a remembered outcome are alternatives rather than companions, so
+a resumed loop clears the ending it recovered from — one agent never holds two versions
+of the same accounting. The outcome of a finished goal is remembered — state and reason —
+for the same 24-hour accounting lifetime, so the screen can say how a loop finished
+rather than losing it the moment the loop is dropped.
 
 **Lifetimes and access.** Label keys: `paseo-acp-goal`, `paseo-acp-goal-verify`,
 `paseo-acp-goal-max`, `paseo-acp-goal-max-tokens`, `paseo-acp-goal-done`. Defaults: 8

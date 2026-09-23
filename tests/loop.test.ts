@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -1005,6 +1005,50 @@ describe("the ACP goals screen, end to end", () => {
         );
       },
     );
+  });
+
+  it("persists the live loop, not the stop it recovered from", async () => {
+    // A screen goal outlives a stop: after a canceled turn the goal is still set, so
+    // the next turn resumes the same loop. The record then exists in two places — the
+    // live accounting and the remembered outcome — and `persist` writes both into one
+    // object. If the remembered one wins, a running loop is persisted as stopped, with
+    // the round it had when it stopped, and a restart comes back believing that.
+    const shared = await mkdtemp(path.join(tmpdir(), "acp-goal-resume-"));
+    try {
+      const harness = await startHarness({ stateDirectory: shared });
+      try {
+        await harness.admin.set(AGENT.id, { goal: "keep going", maxRounds: 10 });
+
+        await harness.turn(assistantTurn("interrupted"), {
+          outcome: { kind: "canceled", reason: "Interrupted" },
+        });
+        assert.equal(harness.lastStatus()?.state, "stopped");
+
+        // The goal is still set, so this turn resumes the same loop and nudges.
+        await harness.turn(assistantTurn("still here"));
+        assert.equal(harness.lastStatus()?.state, "running", "the loop resumed");
+
+        const persisted = JSON.parse(await readFile(path.join(shared, "state.json"), "utf8")) as {
+          loops: Record<string, { round: number; lastOutcome: unknown }>;
+        };
+        const record = persisted.loops[AGENT.id];
+
+        assert.equal(
+          record?.lastOutcome,
+          null,
+          "a resumed loop must not be persisted as the stop it recovered from",
+        );
+        assert.equal(
+          record?.round,
+          harness.lastStatus()?.round,
+          "the persisted round must be the live one",
+        );
+      } finally {
+        await harness.dispose();
+      }
+    } finally {
+      await rm(shared, { recursive: true, force: true });
+    }
   });
 
   it("survives a restart, because a human's instruction is not a cache", async () => {
