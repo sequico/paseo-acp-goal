@@ -99,6 +99,10 @@ interface Runtime {
   toolUsed: Set<string>;
   /** Agents already warned that the offered tool went unused, so the line is said once. */
   toolUnusedWarned: Set<string>;
+  /** Diagnostics sink. Injected so nothing has to mutate a global to read the log. */
+  log: (message: string) => void;
+  /** Turn handling that is still running, so cleanup can wait for it. */
+  inFlight: Set<Promise<void>>;
   acpProviders: Set<string>;
   store: LoopStore;
 }
@@ -265,7 +269,7 @@ function noteToolUnused(runtime: Runtime, agentId: string, reason: StopReason): 
     return;
   }
   runtime.toolUnusedWarned.add(agentId);
-  console.log(
+  runtime.log(
     `[${PLUGIN_ID}] Agent ${agentId} ended its goal (${reason}) without ever calling the goal tool, ` +
       `which was offered to it. This provider may not expose injected MCP servers over ACP; the ` +
       `sentinel route carried the turn instead.`,
@@ -273,16 +277,19 @@ function noteToolUnused(runtime: Runtime, agentId: string, reason: StopReason): 
 }
 
 function prune(runtime: Runtime, timings: GoalLoopTimings): void {
-  const loopCutoff = Date.now() - timings.recordTtlMs;
+  // The expiry test is `updatedAt <= now - ttl`, which is the same statement as
+  // `now - updatedAt >= ttl` — expiry at exactly the TTL boundary.
+  const now = Date.now();
+  const loopCutoff = now - timings.recordTtlMs;
   for (const [agentId, record] of runtime.loops) {
-    if (Date.parse(record.updatedAt) < loopCutoff) {
+    if (Date.parse(record.updatedAt) <= loopCutoff) {
       forget(runtime, agentId);
     }
   }
 
-  const createCutoff = Date.now() - timings.pendingCreateTtlMs;
+  const createCutoff = now - timings.pendingCreateTtlMs;
   for (const [token, mint] of runtime.pendingCreates) {
-    if (mint.at < createCutoff) {
+    if (mint.at <= createCutoff) {
       runtime.pendingCreates.delete(token);
     }
   }
@@ -337,7 +344,7 @@ async function handleTurnEnded({ runtime, gateway, event, ready }: TurnContext):
     return;
   }
   if (!takeTurnEnd(runtime, agent.id)) {
-    console.log(`[${PLUGIN_ID}] Ignoring a duplicate turn-ended event for agent ${agent.id}`);
+    runtime.log(`[${PLUGIN_ID}] Ignoring a duplicate turn-ended event for agent ${agent.id}`);
     return;
   }
 
@@ -425,7 +432,7 @@ async function handleTurnEnded({ runtime, gateway, event, ready }: TurnContext):
       forget(runtime, agent.id);
     }
 
-    console.log(
+    runtime.log(
       `[${PLUGIN_ID}] Agent ${agent.id} ${state} (${decision.reason}) after ${next.round} round(s): ${detail}`,
     );
     await gateway.writeStatus(
@@ -493,12 +500,37 @@ export interface GoalLoopOptions {
   gateway?: (paseo: PaseoApi) => GoalAgentGateway;
   /** Lifetimes and sweep cadence. Defaults are in `DEFAULT_TIMINGS`. */
   timings?: Partial<GoalLoopTimings>;
+  /**
+   * Where diagnostics go. Defaults to `console.log`, which is what the daemon
+   * captures. Injected so a caller can observe the loop's own output without
+   * replacing a global — mutating `console` to read a log is the kind of manoeuvre
+   * that works in one environment and quietly breaks in another.
+   */
+  log?: (message: string) => void;
 }
 
-export function registerGoalLoop(
-  host: GoalLoopHost,
-  options: GoalLoopOptions = {},
-): () => Promise<void> {
+export interface GoalLoop {
+  /**
+   * Paseo's cleanup. Waits for in-flight turn handling before it returns.
+   *
+   * A turn handler outlives its hook by design, so a plugin that stops while one is
+   * mid-write would leave a half-written state file. Waiting is not a test
+   * convenience; it is the difference between stopping cleanly and stopping between
+   * two writes.
+   */
+  cleanup: () => Promise<void>;
+  /**
+   * Resolves once no turn handling is in flight.
+   *
+   * Exposed because "the hook returned immediately" and "the turn is finished being
+   * judged" are different facts, and a supervisor — or a test — legitimately needs
+   * the second one. Without it the only way to wait is to guess at a number of event
+   * loop turns, which is how a suite becomes flaky on a machine it was never run on.
+   */
+  idle: () => Promise<void>;
+}
+
+export function registerGoalLoop(host: GoalLoopHost, options: GoalLoopOptions = {}): GoalLoop {
   const buildGateway = options.gateway ?? paseoGateway;
   const timings: GoalLoopTimings = { ...DEFAULT_TIMINGS, ...options.timings };
   const runtime: Runtime = {
@@ -510,6 +542,8 @@ export function registerGoalLoop(
     everStarted: new Set(),
     toolUsed: new Set(),
     toolUnusedWarned: new Set(),
+    log: options.log ?? ((message: string) => console.log(message)),
+    inFlight: new Set(),
     acpProviders: new Set(),
     store:
       options.stateDirectory === undefined
@@ -611,26 +645,45 @@ export function registerGoalLoop(
 
   removers.push(
     host.onTurnEnded((event, context) => {
-      void handleTurnEnded({
+      const work = handleTurnEnded({
         runtime,
         gateway: buildGateway(context.paseo),
         event,
         ready,
       });
+      // Tracked so cleanup can wait for it. A turn handler outlives its hook by
+      // design, and a plugin that stops while one is mid-write would leave a state
+      // file half-written and a directory that is not empty when it should be gone.
+      runtime.inFlight.add(work);
+      void work.finally(() => runtime.inFlight.delete(work));
     }),
   );
 
   removers.push(
     host.onArchived((event, context) => {
-      void handleArchived(runtime, buildGateway, event, context, ready);
+      const work = handleArchived(runtime, buildGateway, event, context, ready);
+      runtime.inFlight.add(work);
+      void work.finally(() => runtime.inFlight.delete(work));
     }),
   );
 
-  return async () => {
+  const settle = async (): Promise<void> => {
+    // `allSettled` iterates its input synchronously, so the live set is safe to pass
+    // directly; the loop re-reads its size in case more work was started meanwhile.
+    while (runtime.inFlight.size > 0) {
+      await Promise.allSettled(runtime.inFlight);
+    }
+  };
+
+  const cleanup = async (): Promise<void> => {
     clearInterval(pruneTimer);
     for (const remove of removers) {
       remove();
     }
+
+    // Wait for turn handling that is still running before tearing anything down.
+    await settle();
+
     runtime.loops.clear();
     runtime.signals.clear();
     runtime.pendingCreates.clear();
@@ -641,4 +694,6 @@ export function registerGoalLoop(
     const mcp = await mcpReady;
     await mcp?.close();
   };
+
+  return { cleanup, idle: settle };
 }

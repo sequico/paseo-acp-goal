@@ -3,5 +3,5 @@ import { registerGoalLoop } from "./server/loop";
 import { pluginHost } from "./server/plugin-host";
 
 export default function contribute(server: PluginServerContext) {
-  return registerGoalLoop(pluginHost(server));
+  return registerGoalLoop(pluginHost(server)).cleanup;
 }

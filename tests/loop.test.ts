@@ -93,13 +93,6 @@ async function startHarness(options: HarnessOptions = {}): Promise<Harness> {
   const dir = await mkdtemp(path.join(tmpdir(), "acp-goal-"));
   const recorded: Recorded = { sends: [], byAgent: new Map(), logs: [] };
 
-  // The loop logs through `console.log`, and its diagnostics are part of what is
-  // being verified, so stdout is captured for the duration and restored after.
-  const originalLog = console.log;
-  console.log = (...args: unknown[]) => {
-    recorded.logs.push(args.map((value) => String(value)).join(" "));
-  };
-
   const configPath = path.join(dir, "config.json");
   await writeFile(
     configPath,
@@ -179,22 +172,22 @@ async function startHarness(options: HarnessOptions = {}): Promise<Harness> {
     },
   };
 
-  const dispose = registerGoalLoop(host, {
+  const loop = registerGoalLoop(host, {
     version: "0.0.0-test",
     configPath,
     stateDirectory: path.join(dir, "state"),
     gateway: () => gateway,
+    // An injected sink rather than a replaced global: two harnesses cannot clobber
+    // each other's output, and a failure cannot leave `console` patched behind it.
+    log: (message) => recorded.logs.push(message),
     ...(options.recordTtlMs === undefined ? {} : { timings: { recordTtlMs: options.recordTtlMs } }),
   });
 
-  // Every hook detaches, because a verification command may run for minutes. The
-  // events used here are trivial, so draining the microtask and immediate queues is
-  // enough; the alternative is an arbitrary sleep, which is a flaky test.
-  const drain = async (): Promise<void> => {
-    for (let step = 0; step < 50; step += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-  };
+  // Every hook detaches its work, because a verification command may run for minutes.
+  // Waiting on a fixed number of event loop turns would make this suite depend on how
+  // fast a subprocess exits on the machine running it, so the wait is on the loop's
+  // own statement that it is quiescent.
+  const drain = (): Promise<void> => loop.idle();
 
   const agentFor = (agentId: string | undefined): PluginHookAgent => ({
     ...AGENT,
@@ -252,8 +245,7 @@ async function startHarness(options: HarnessOptions = {}): Promise<Harness> {
       sessionOpen(request);
     },
     async dispose() {
-      await dispose();
-      console.log = originalLog;
+      await loop.cleanup();
       await rm(dir, { recursive: true, force: true });
     },
   };
