@@ -32,14 +32,24 @@ updates:
       prefix: "chore"
     labels:
       - dependencies
-    # Three of these are not free to move, and the reason is not taste: they are the
-    # host SDK's peer dependencies. `@getpaseo/plugin@0.9.1` requires `react ~19.1.0`
-    # — `>=19.1.0 <19.2.0` — while `react-native@0.87` requires `react ^19.2.3`, so the
-    # two ranges do not intersect and no version of react can satisfy both. Dependabot
-    # proposed exactly that move as part of a group and `npm ci` refused it with
-    # ERESOLVE, which is the correct outcome: these three follow the SDK version, and
-    # they are bumped together with it when Paseo ships a new one, not on a schedule.
+    # Six of these are not free to move, and the reason is not taste: they are the host
+    # SDK and the peer dependencies it pins. `@getpaseo/plugin@0.9.1` requires
+    # `react ~19.1.0` — `>=19.1.0 <19.2.0` — while `react-native@0.87` requires
+    # `react ^19.2.3`, so the two ranges do not intersect and no version of react can
+    # satisfy both. Dependabot proposed exactly that move as part of a group and
+    # `npm ci` refused it with ERESOLVE, which is the correct outcome.
+    #
+    # Ignoring the SDK trio as well is what makes the rule coherent rather than
+    # half-applied: a peer range can only move with the SDK that declares it, so
+    # allowing the SDK to move on its own would leave every such pull request failing on
+    # a peer bump this list forbids. These six are upgraded together, by hand, when the
+    # plugin targets a new Paseo — `@getpaseo/*`, `react`, `react-native`, and
+    # `@types/react`, with `zod` left to Dependabot because its caret range already
+    # tracks the SDK's `^4.4.3` peer.
     ignore:
+      - dependency-name: "@getpaseo/client"
+      - dependency-name: "@getpaseo/plugin"
+      - dependency-name: "@getpaseo/protocol"
       - dependency-name: react
       - dependency-name: react-native
       - dependency-name: "@types/react"
