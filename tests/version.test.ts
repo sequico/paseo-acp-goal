@@ -13,9 +13,9 @@ import { PLUGIN_VERSION } from "../server/loop";
  * no `import.meta.url`, no path to its own directory — so server code cannot read
  * `package.json` at runtime; and `package-lock.json` mirrors the version in two fields
  * of its own. The copies are therefore forced, and forced copies are exactly what
- * drifts. The lockfile one had already drifted here: it still said `0.1.0` at `0.1.3`,
- * because three releases went through `package.json` by hand and `npm ci` does not
- * compare the two.
+ * drifts. The lockfile one drifts silently and for the longest: a version bumped by hand
+ * in `package.json` leaves it behind, because `npm ci` compares the lockfile against the
+ * manifests' dependencies and not against their version field.
  *
  * So the equality is asserted here rather than remembered. This file runs where those
  * manifests exist, which the shipped bundle does not, and that is the whole asymmetry

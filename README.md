@@ -235,8 +235,8 @@ release's notes — so a daemon can sit on a known revision instead of on whatev
 is today, and move when you say so:
 
 ```bash
-paseo plugin install github:sequico/paseo-acp-goal --ref v0.1.4
-paseo plugin update paseo-acp-goal --ref v0.1.5   # move it to a later release
+paseo plugin install github:sequico/paseo-acp-goal --ref v0.1.0
+paseo plugin update paseo-acp-goal --ref v0.1.1   # move it to a later release
 ```
 
 **From a local directory**, for working on the plugin itself:
@@ -345,8 +345,8 @@ reach those agents is the planned 0.2.0.
 
 **The status card and the ACP goals screen are client contributions.** They render in
 the Paseo app on desktop, web, and mobile; `paseo` on the command line shows neither
-plugin timeline rows nor plugin surfaces. Both are new in 0.1.1 — if your client does
-not show them, that is a bug, and an issue with the client version is welcome.
+plugin timeline rows nor plugin surfaces. A client that does not show them needs
+updating, and an issue with the client version is welcome.
 
 **The token ceiling counts what the provider reports.** A provider that reports no
 token usage leaves the ceiling with nothing to count, and only the round ceiling
